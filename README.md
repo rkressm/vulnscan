@@ -1,13 +1,15 @@
 # depscan
 
+[![Checks](https://github.com/rkressm/vulnscan/actions/workflows/checks.yml/badge.svg?branch=main)](https://github.com/rkressm/vulnscan/actions/workflows/checks.yml)
+
 ## Goal
 
 depscan aims to check declared Python dependencies for known vulnerabilities using
 the public [OSV](https://osv.dev/) database, with clear results for dependencies
 that cannot be checked.
 
-**Current status:** reading requirements files and selecting package versions work.
-Vulnerability lookups and CLI scanning are not implemented yet. See
+**Current status:** reading requirements files, selecting package versions, and
+OSV lookups work through the Python API. CLI scanning is not implemented yet. See
 [plan.md](plan.md) for the roadmap.
 
 ## Quick install
@@ -68,6 +70,32 @@ not mean vulnerability-free.**
 
 Do not install the example requirements; they intentionally demonstrate missing,
 excluded, and unsupported dependencies.
+
+### OSV lookups (Python API)
+
+The lookup client accepts selected package versions independently of the reader:
+
+```python
+from depscan.models import PackageVersion
+from depscan.osv import lookup_packages
+
+results = lookup_packages([PackageVersion(name="requests", version="2.31.0")])
+for result in results:
+    print(result.model_dump_json())
+```
+
+This makes real requests to the public OSV API. Each normalized package name and
+exact version is queried once per call, with a 5-second connection timeout and a
+30-second read timeout. These are not a total scan deadline. No persistent cache
+or automatic retries are used yet.
+
+Results have status `success` with an `advisories` list (empty means **no known
+vulnerabilities**), or `failed` with a reason. Failed lookups never become empty
+successful results. Each advisory includes its identifier, an OSV details link,
+and severity. Severity copies recognized `database_specific.severity` labels
+(`LOW`, `MODERATE`, `MEDIUM`, `HIGH`, `CRITICAL`, case-insensitive); missing or
+unrecognized labels, including CVSS-only data, produce `UNKNOWN`. CVSS vectors
+are not scored and ratings are not inferred.
 
 ## Development
 

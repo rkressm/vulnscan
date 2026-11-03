@@ -1,4 +1,4 @@
-"""Validated data shared by the scanner's future components."""
+"""Validated data shared by the scanner's components."""
 
 from pathlib import Path
 from typing import Annotated, Literal
@@ -65,4 +65,39 @@ class NonApplicableRequirement(BaseModel):
 type RequirementResult = Annotated[
     ReadyRequirement | UnscannedRequirement | NonApplicableRequirement,
     Field(discriminator="status"),
+]
+
+
+class Advisory(BaseModel):
+    """An advisory with a published severity label, if available."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    identifier: NonEmptyString
+    severity: Literal["LOW", "MODERATE", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]
+    url: NonEmptyString
+
+
+class SuccessfulLookup(BaseModel):
+    """A completed lookup; an empty advisory tuple means no known vulnerabilities."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    status: Literal["success"] = "success"
+    package: PackageVersion
+    advisories: tuple[Advisory, ...]
+
+
+class FailedLookup(BaseModel):
+    """A lookup failure, never a claim that the package has no vulnerabilities."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    status: Literal["failed"] = "failed"
+    package: PackageVersion
+    reason: NonEmptyString
+
+
+type LookupResult = Annotated[
+    SuccessfulLookup | FailedLookup, Field(discriminator="status")
 ]
