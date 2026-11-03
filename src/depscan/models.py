@@ -1,5 +1,6 @@
 """Validated data shared by the scanner's components."""
 
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -101,3 +102,46 @@ class FailedLookup(BaseModel):
 type LookupResult = Annotated[
     SuccessfulLookup | FailedLookup, Field(discriminator="status")
 ]
+
+
+class ScannedRequirement(BaseModel):
+    """A source declaration with a completed vulnerability lookup."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    status: Literal["vulnerable", "no_known_vulnerabilities"]
+    source: SourceLocation
+    package: PackageVersion
+    advisories: tuple[Advisory, ...]
+
+
+type ScanResult = Annotated[
+    ScannedRequirement | UnscannedRequirement | NonApplicableRequirement,
+    Field(discriminator="status"),
+]
+
+
+class ScanError(BaseModel):
+    """A failure that makes a scan incomplete, with its source if available."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    source: SourceLocation | None = None
+    reason: NonEmptyString
+
+
+class ScanReport(BaseModel):
+    """Versioned report shared by terminal and JSON output."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    scanned_at: datetime
+    results: tuple[ScanResult, ...]
+    errors: tuple[ScanError, ...]
+
+    @property
+    def exit_code(self) -> int:
+        if self.errors or any(item.status == "unscanned" for item in self.results):
+            return 2
+        return int(any(item.status == "vulnerable" for item in self.results))

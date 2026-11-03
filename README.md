@@ -8,9 +8,8 @@ depscan aims to check declared Python dependencies for known vulnerabilities usi
 the public [OSV](https://osv.dev/) database, with clear results for dependencies
 that cannot be checked.
 
-**Current status:** reading requirements files, selecting package versions, and
-OSV lookups work through the Python API. CLI scanning is not implemented yet. See
-[plan.md](plan.md) for the roadmap.
+**Current status:** CLI scanning, terminal reports, and JSON export are implemented.
+Persistent caching is planned for Day 4. See [plan.md](plan.md) for the roadmap.
 
 ## Quick install
 
@@ -26,38 +25,47 @@ if needed. You do not need to activate the virtual environment.
 
 ## Usage
 
-Show the available CLI options or package version:
+Scan a requirements file, optionally saving a JSON report:
 
 ```sh
+uv run depscan requirements.txt
+uv run depscan requirements.txt --json report.json
+uv run depscan requirements.txt --no-cache
 uv run depscan --help
 uv run depscan --version
 ```
 
-Running `uv run depscan` currently exits with an error explaining that scanning is
-not implemented. To try the requirements reader, run this Python example from
-the project directory:
+Scanning makes requests to the public OSV API. `--no-cache` is accepted now;
+all lookups currently use live data, with no persistent cache.
 
-```sh
-uv run python - <<'PY'
-from depscan.models import ReadyRequirement
-from depscan.requirements import read_requirements
+Terminal output distinguishes **vulnerable**, **no known vulnerabilities**,
+**unscanned**, and **non applicable** declarations. Advisory rows include the
+identifier, published severity (or `UNKNOWN`), and an OSV details link. Unscanned
+and excluded declarations include their source filename, line, and reason.
 
-for result in read_requirements("examples/requirements.txt"):
-    location = f"{result.source.path}:{result.source.line}"
-    if isinstance(result, ReadyRequirement):
-        detail = f"{result.package.name}=={result.package.version}"
-    else:
-        detail = result.reason
-    print(f"{location}: {result.status}: {detail}")
-PY
-```
+The summary counts checked package/version pairs once, separately reporting
+vulnerable pairs and advisory totals. The same advisory affecting two distinct
+pairs counts twice. Duplicate declarations remain visible in terminal and JSON
+results but do not inflate these totals. Unscanned and non-applicable counts
+are counts of declarations (including file/include errors).
 
-Replace `examples/requirements.txt` with your own file to read its dependencies.
-The reader does not install packages or make network requests.
+Exit codes:
 
-Results are `ready` (a version was selected), `non_applicable` (excluded by an
-environment marker), or `unscanned` (unsupported or unresolved). **`ready` does
-not mean vulnerability-free.**
+- `0`: completed scan, no known vulnerabilities.
+- `1`: completed scan, vulnerabilities found.
+- `2`: invalid input, failed lookup, incomplete scan, or failed report export,
+  even when vulnerabilities were also found.
+
+Excluded environment markers do not make a scan incomplete. Empty files complete
+with zero checked packages; this is not a claim about undeclared dependencies.
+
+JSON export uses `schema_version: 1`, a UTC scan-start timestamp (`scanned_at`),
+`results`, and `errors`. Each result preserves its source location and declaration.
+Statuses are `vulnerable`, `no_known_vulnerabilities`, `unscanned`, and
+`non_applicable`. Completed lookups include the package/version and advisories;
+other results include a reason. `errors` lists failures with their source location
+(or `null` for a report-wide failure). A failed lookup is never exported as a
+successful empty advisory list. The destination's parent directory must exist.
 
 ### Requirements file support
 
