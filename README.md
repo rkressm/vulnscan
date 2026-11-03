@@ -8,8 +8,8 @@ depscan aims to check declared Python dependencies for known vulnerabilities usi
 the public [OSV](https://osv.dev/) database, with clear results for dependencies
 that cannot be checked.
 
-**Current status:** CLI scanning, terminal reports, and JSON export are implemented.
-Persistent caching is planned for Day 4. See [plan.md](plan.md) for the roadmap.
+**Current status:** CLI scanning, terminal reports, JSON export, and a persistent
+24-hour lookup cache are implemented. See [plan.md](plan.md) for the roadmap.
 
 ## Quick install
 
@@ -35,8 +35,21 @@ uv run depscan --help
 uv run depscan --version
 ```
 
-Scanning makes requests to the public OSV API. `--no-cache` is accepted now;
-all lookups currently use live data, with no persistent cache.
+Scanning makes requests to the public OSV API unless a fresh cached result exists.
+Use `--no-cache` to bypass both cache reads and writes and query live OSV data.
+
+### Local cache
+
+Successful lookups, including results with no known vulnerabilities, are cached
+for 24 hours. Keys include the PyPI ecosystem, normalized package name, and exact
+version. Failed lookups are never cached; expired results are never substituted
+when OSV is unavailable. Cached results may omit newly published advisories until
+refreshed; use `--no-cache` when current data is needed.
+
+The cache is `osv.json` in the platform-specific depscan cache directory, selected
+by `platformdirs` (typically `~/.cache/depscan/` on Linux, respecting
+`XDG_CACHE_HOME`). Missing, corrupt, or unreadable cache files trigger live
+lookups. Writes use atomic replacement; cache write failures do not fail a scan.
 
 Terminal output distinguishes **vulnerable**, **no known vulnerabilities**,
 **unscanned**, and **non applicable** declarations. Advisory rows include the
@@ -61,8 +74,10 @@ with zero checked packages; this is not a claim about undeclared dependencies.
 
 JSON export uses `schema_version: 1`, a UTC scan-start timestamp (`scanned_at`),
 `results`, and `errors`. Each result preserves its source location and declaration.
-Statuses are `vulnerable`, `no_known_vulnerabilities`, `unscanned`, and
-`non_applicable`. Completed lookups include the package/version and advisories;
+Completed results also include `looked_up_at`, the UTC time of the original OSV
+lookup, preserved on cache hits so result age can be determined independently of
+the scan-start timestamp. Statuses are `vulnerable`, `no_known_vulnerabilities`,
+`unscanned`, and `non_applicable`. Completed lookups include the package/version and advisories;
 other results include a reason. `errors` lists failures with their source location
 (or `null` for a report-wide failure). A failed lookup is never exported as a
 successful empty advisory list. The destination's parent directory must exist.
@@ -94,8 +109,9 @@ for result in results:
 
 This makes real requests to the public OSV API. Each normalized package name and
 exact version is queried once per call, with a 5-second connection timeout and a
-30-second read timeout. These are not a total scan deadline. No persistent cache
-or automatic retries are used yet.
+30-second read timeout. These are not a total scan deadline. The Python API uses
+live data by default, with no automatic retries. To enable persistent caching,
+pass `cache=LookupCache()` from `depscan.cache` to `lookup_packages`.
 
 Results have status `success` with an `advisories` list (empty means **no known
 vulnerabilities**), or `failed` with a reason. Failed lookups never become empty

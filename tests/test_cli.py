@@ -12,7 +12,8 @@ from depscan.cli import main
 
 
 @pytest.fixture(autouse=True)
-def offline_osv(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+def offline_osv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
+    monkeypatch.setattr("depscan.cache.user_cache_path", lambda app: tmp_path / "cache")
     response = MagicMock()
     response.status_code = 200
     response.json.return_value = {}
@@ -258,3 +259,54 @@ def test_invalid_output_path(
     assert main([str(requirements), "--json", "invalid\x00.json"]) == 2
 
     assert "invalid JSON output path" in capsys.readouterr().err
+
+
+def test_cache_reuse_and_no_cache_bypass(
+    tmp_path: Path, offline_osv: MagicMock
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("demo==1\n", encoding="utf-8")
+    destination = tmp_path / "report.json"
+    args = [str(requirements), "--json", str(destination)]
+    assert main(args) == 0
+    first = json.loads(destination.read_text(encoding="utf-8"))
+    timestamp = first["results"][0]["looked_up_at"]
+    assert datetime.fromisoformat(timestamp).utcoffset() is not None
+    cache_path = tmp_path / "cache" / "osv.json"
+    cached_bytes = cache_path.read_bytes()
+
+    assert main(args) == 0
+    assert offline_osv.call_count == 1
+    assert (
+        json.loads(destination.read_text())["results"][0]["looked_up_at"] == timestamp
+    )
+
+    offline_osv.return_value.json.return_value = {"vulns": [{"id": "NEW-1"}]}
+    assert main([*args, "--no-cache"]) == 1
+    assert offline_osv.call_count == 2
+    assert cache_path.read_bytes() == cached_bytes
+    assert main(args) == 0
+    assert offline_osv.call_count == 2
+
+
+def test_no_cache_does_not_even_open_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline_osv: MagicMock
+) -> None:
+    def forbidden_cache() -> None:
+        pytest.fail("--no-cache must not open the cache")
+
+    monkeypatch.setattr("depscan.cli.LookupCache", forbidden_cache)
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("demo==1\n", encoding="utf-8")
+    assert main([str(requirements), "--no-cache"]) == 0
+    offline_osv.assert_called_once()
+
+
+def test_failed_lookup_is_not_persisted(tmp_path: Path, offline_osv: MagicMock) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("demo==1\n", encoding="utf-8")
+    offline_osv.return_value.status_code = 503
+    assert main([str(requirements)]) == 2
+    assert main([str(requirements)]) == 2
+    assert offline_osv.call_count == 2
+    assert not (tmp_path / "cache" / "osv.json").exists()

@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -87,6 +87,7 @@ class SuccessfulLookup(BaseModel):
     status: Literal["success"] = "success"
     package: PackageVersion
     advisories: tuple[Advisory, ...]
+    looked_up_at: AwareDatetime | None = None
 
 
 class FailedLookup(BaseModel):
@@ -113,6 +114,7 @@ class ScannedRequirement(BaseModel):
     source: SourceLocation
     package: PackageVersion
     advisories: tuple[Advisory, ...]
+    looked_up_at: AwareDatetime | None = None
 
 
 type ScanResult = Annotated[

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
+from depscan.cache import LookupCache
 from depscan.models import (
     FailedLookup,
     ReadyRequirement,
@@ -37,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="bypass caching (all lookups currently use live OSV data)",
+        help="bypass both cache reads and writes; query live OSV data",
     )
     args = parser.parse_args(argv)
     # Protect the root input and source files represented in the results.
@@ -63,9 +64,12 @@ def main(argv: list[str] | None = None) -> int:
         lookups = {
             result.package: result
             for result in lookup_packages(
-                item.package
-                for item in requirements
-                if isinstance(item, ReadyRequirement)
+                (
+                    item.package
+                    for item in requirements
+                    if isinstance(item, ReadyRequirement)
+                ),
+                cache=None if args.no_cache else LookupCache(),
             )
         }
         results: list[ScanResult] = []
@@ -93,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                                 else "no_known_vulnerabilities"
                             ),
                             advisories=lookup.advisories,
+                            looked_up_at=lookup.looked_up_at,
                         )
                     )
             else:

@@ -27,7 +27,10 @@ def post(monkeypatch: pytest.MonkeyPatch) -> Mock:
 def test_request_contract_and_empty_response(post: Mock) -> None:
     result = lookup_packages([PACKAGE])
 
-    assert result == [SuccessfulLookup(package=PACKAGE, advisories=())]
+    assert isinstance(result[0], SuccessfulLookup)
+    assert result[0].package == PACKAGE
+    assert result[0].advisories == ()
+    assert result[0].looked_up_at is not None
     post.assert_called_once_with(
         "https://api.osv.dev/v1/query",
         json={
@@ -106,9 +109,10 @@ def test_cvss_vector_does_not_invent_severity(post: Mock) -> None:
 def test_explicit_empty_vulns(post: Mock) -> None:
     post.return_value.json.return_value = {"vulns": []}
 
-    assert lookup_packages([PACKAGE]) == [
-        SuccessfulLookup(package=PACKAGE, advisories=())
-    ]
+    result = lookup_packages([PACKAGE])[0]
+    assert isinstance(result, SuccessfulLookup)
+    assert result.package == PACKAGE
+    assert result.advisories == ()
 
 
 @pytest.mark.parametrize("status", [301, 400, 404, 429, 500, 503])
