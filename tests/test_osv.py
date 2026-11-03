@@ -1,11 +1,13 @@
 """Offline OSV contract, failure handling, and per-scan deduplication tests."""
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 import requests
 from pydantic import TypeAdapter
 
+from depscan.cache import LookupCache
 from depscan.models import FailedLookup, LookupResult, PackageVersion, SuccessfulLookup
 from depscan.osv import lookup_packages
 
@@ -235,3 +237,100 @@ def test_lookup_results_json_round_trip(post: Mock) -> None:
     adapter = TypeAdapter(list[LookupResult])
 
     assert adapter.validate_json(adapter.dump_json(results)) == results
+
+
+def test_token_only_page_is_followed(post: Mock) -> None:
+    post.return_value.json.side_effect = [
+        {"next_page_token": "page-two"},
+        {"vulns": [{"id": "TEST-1"}]},
+    ]
+
+    result = lookup_packages([PACKAGE])[0]
+
+    assert isinstance(result, SuccessfulLookup)
+    assert [item.identifier for item in result.advisories] == ["TEST-1"]
+    assert post.call_count == 2
+    assert post.call_args.kwargs["json"]["page_token"] == "page-two"
+    assert "page_token" not in post.call_args_list[0].kwargs["json"]
+
+
+def test_advisories_accumulate_across_pages(post: Mock) -> None:
+    post.return_value.json.side_effect = [
+        {"vulns": [{"id": "TEST-1"}], "next_page_token": "page-two"},
+        {"vulns": [{"id": "TEST-2"}], "next_page_token": "page-three"},
+        {"vulns": [{"id": "TEST-3"}]},
+    ]
+
+    result = lookup_packages([PACKAGE])[0]
+
+    assert isinstance(result, SuccessfulLookup)
+    assert [item.identifier for item in result.advisories] == [
+        "TEST-1",
+        "TEST-2",
+        "TEST-3",
+    ]
+    assert post.call_count == 3
+
+
+def test_repeated_page_token_fails_instead_of_looping(post: Mock) -> None:
+    post.return_value.json.return_value = {"next_page_token": "same-page"}
+
+    result = lookup_packages([PACKAGE])[0]
+
+    assert isinstance(result, FailedLookup)
+    assert "pagination" in result.reason.lower()
+    assert post.call_count == 2
+
+
+@pytest.mark.parametrize("failure", ["timeout", "http", "malformed", "limit"])
+def test_failed_later_page_is_not_cached(
+    post: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    first_page = {"vulns": [{"id": "TEST-1"}], "next_page_token": "page-two"}
+    if failure == "timeout":
+        post.return_value.json.return_value = first_page
+        post.side_effect = [post.return_value, requests.ReadTimeout("later page")]
+    elif failure == "http":
+        failed_response = Mock(spec=requests.Response)
+        failed_response.status_code = 503
+        failed_response.__enter__ = Mock(return_value=failed_response)
+        failed_response.__exit__ = Mock(return_value=False)
+        post.return_value.json.return_value = first_page
+        post.side_effect = [post.return_value, failed_response]
+    else:
+        monkeypatch.setattr("depscan.osv._MAX_PAGES", 2)
+        second_page: dict[str, object] = (
+            {"vulns": [{}]}
+            if failure == "malformed"
+            else {"next_page_token": "page-three"}
+        )
+        post.return_value.json.side_effect = [first_page, second_page]
+    path = tmp_path / "cache.json"
+    cache = LookupCache(path)
+
+    result = lookup_packages([PACKAGE], cache=cache)[0]
+
+    assert isinstance(result, FailedLookup)
+    assert post.call_count == 2
+    assert cache.get(PACKAGE) is None
+    assert not path.exists()
+
+
+def test_all_pages_are_cached_together(post: Mock, tmp_path: Path) -> None:
+    post.return_value.json.side_effect = [
+        {"vulns": [{"id": "TEST-1"}], "next_page_token": "page-two"},
+        {"vulns": [{"id": "TEST-2"}]},
+    ]
+    path = tmp_path / "cache.json"
+    result = lookup_packages([PACKAGE], cache=LookupCache(path))[0]
+    assert isinstance(result, SuccessfulLookup)
+    assert len(result.advisories) == 2
+
+    post.side_effect = AssertionError("cached lookups must not make HTTP requests")
+    assert lookup_packages([PACKAGE], cache=LookupCache(path)) == [result]
+
+
+@pytest.mark.parametrize("token", [None, 123, [], {}])
+def test_malformed_page_token_is_not_a_clean_result(post: Mock, token: object) -> None:
+    post.return_value.json.return_value = {"next_page_token": token}
+    assert isinstance(lookup_packages([PACKAGE])[0], FailedLookup)

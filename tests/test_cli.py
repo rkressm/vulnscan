@@ -74,6 +74,113 @@ def test_clean_scan(
     assert offline_osv.call_count == 1
 
 
+def test_project_lock_scan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], offline_osv: MagicMock
+) -> None:
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'version=1\n[[package]]\nname="demo"\nversion="1"\n'
+        'source={registry="https://pypi.org/simple"}\n',
+        encoding="utf-8",
+    )
+    assert main([str(tmp_path), "--no-cache"]) == 0
+    captured = capsys.readouterr()
+    assert str(lock) in captured.err
+    assert "Checked 1 unique" in captured.out
+    assert offline_osv.call_count == 1
+
+
+def test_project_export_cannot_overwrite_lockfile(
+    tmp_path: Path, offline_osv: MagicMock
+) -> None:
+    lock = tmp_path / "uv.lock"
+    content = "version=1\npackage=[]\n"
+    lock.write_text(content, encoding="utf-8")
+    assert main([str(tmp_path), "--json", str(lock)]) == 2
+    assert lock.read_text(encoding="utf-8") == content
+    offline_osv.assert_not_called()
+
+
+def test_project_without_manifest_is_incomplete(
+    tmp_path: Path, offline_osv: MagicMock
+) -> None:
+    assert main([str(tmp_path), "--no-cache"]) == 2
+    offline_osv.assert_not_called()
+
+
+@pytest.mark.parametrize("content", ["", "# comment only\n", "\n  \n"])
+@pytest.mark.parametrize("project_scan", [False, True])
+def test_json_cannot_overwrite_empty_nested_include(
+    tmp_path: Path, offline_osv: MagicMock, content: str, project_scan: bool
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("-r intermediate.txt\n", encoding="utf-8")
+    intermediate = tmp_path / "intermediate.txt"
+    intermediate.write_text("-r base.txt\n", encoding="utf-8")
+    included = tmp_path / "base.txt"
+    included.write_text(content, encoding="utf-8")
+
+    target = tmp_path if project_scan else requirements
+    assert main([str(target), "--json", str(included)]) == 2
+    assert included.read_text(encoding="utf-8") == content
+    offline_osv.assert_not_called()
+
+
+def test_paginated_osv_response_reaches_cli(
+    tmp_path: Path, offline_osv: MagicMock
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("requests==2.31.0\n", encoding="utf-8")
+    offline_osv.return_value.json.side_effect = [
+        {"next_page_token": "more"},
+        {"vulns": [{"id": "TEST-1"}]},
+    ]
+    report = tmp_path / "report.json"
+
+    assert main([str(requirements), "--no-cache", "--json", str(report)]) == 1
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["results"][0]["advisories"][0]["identifier"] == "TEST-1"
+
+
+def test_failed_later_page_makes_cli_incomplete(
+    tmp_path: Path, offline_osv: MagicMock
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("requests==2.31.0\n", encoding="utf-8")
+    offline_osv.return_value.json.side_effect = [
+        {"vulns": [{"id": "TEST-1"}], "next_page_token": "more"},
+        {"vulns": [{}]},
+    ]
+    report = tmp_path / "report.json"
+
+    assert main([str(requirements), "--json", str(report)]) == 2
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["results"][0]["status"] == "unscanned"
+    assert data["errors"]
+    assert not (tmp_path / "cache" / "osv.json").exists()
+
+
+def test_pipfile_custom_category_reaches_osv(
+    tmp_path: Path, offline_osv: MagicMock
+) -> None:
+    lock = tmp_path / "Pipfile.lock"
+    lock.write_text(
+        json.dumps(
+            {
+                "_meta": {},
+                "default": {},
+                "develop": {},
+                "production": {"requests": {"version": "==2.31.0"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main([str(tmp_path), "--no-cache"]) == 0
+    offline_osv.assert_called_once()
+    assert offline_osv.call_args.kwargs["json"]["package"]["name"] == "requests"
+
+
 def test_vulnerabilities_and_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], offline_osv: MagicMock
 ) -> None:
@@ -207,6 +314,24 @@ def test_refuse_to_overwrite_input(
 
     assert "must not overwrite" in capsys.readouterr().err
     assert requirements.read_text(encoding="utf-8") == "demo==1\n"
+    offline_osv.assert_not_called()
+
+
+@pytest.mark.parametrize("included", [False, True])
+def test_refuse_to_overwrite_hardlinked_input(
+    tmp_path: Path, offline_osv: MagicMock, included: bool
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    source = tmp_path / "base.txt" if included else requirements
+    original = "# empty requirements\n"
+    source.write_text(original, encoding="utf-8")
+    if included:
+        requirements.write_text("-r base.txt\n", encoding="utf-8")
+    output = tmp_path / "report.json"
+    output.hardlink_to(source)
+
+    assert main([str(requirements), "--json", str(output)]) == 2
+    assert source.read_text(encoding="utf-8") == original
     offline_osv.assert_not_called()
 
 

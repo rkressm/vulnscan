@@ -1,5 +1,7 @@
 """Plain terminal output and versioned JSON export; no scanning or networking."""
 
+import os
+import tempfile
 from pathlib import Path
 
 from depscan.models import ScannedRequirement, ScanReport
@@ -77,5 +79,21 @@ def render_terminal(report: ScanReport) -> str:
 
 
 def write_json(report: ScanReport, path: Path) -> None:
-    """Write UTF-8 JSON; filesystem errors are handled by the CLI."""
-    path.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    """Atomically replace the report; a failed write preserves an existing report."""
+    payload = report.model_dump_json(indent=2) + "\n"
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass

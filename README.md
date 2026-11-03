@@ -2,124 +2,93 @@
 
 [![Checks](https://github.com/rkressm/vulnscan/actions/workflows/checks.yml/badge.svg?branch=main)](https://github.com/rkressm/vulnscan/actions/workflows/checks.yml)
 
-## Goal
-
-depscan aims to check declared Python dependencies for known vulnerabilities using
-the public [OSV](https://osv.dev/) database, with clear results for dependencies
-that cannot be checked.
-
-**Current status:** CLI scanning, terminal reports, JSON export, and a persistent
-24-hour lookup cache are implemented. See [plan.md](plan.md) for the roadmap.
+Check a Python project's dependencies for known vulnerabilities using [OSV](https://osv.dev/).
+Get a readable terminal report, export JSON, and see exactly what couldn't be checked.
 
 ## Quick install
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run
-from the project directory:
+Requires **Python 3.14+** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+uv can install Python for you if needed.
 
 ```sh
+git clone https://github.com/rkressm/vulnscan.git
+cd vulnscan
 uv sync --locked
 ```
 
-The project requires Python 3.14 or newer; uv can install Python automatically
-if needed. You do not need to activate the virtual environment.
+No need to activate a virtual environment. These commands install from source.
 
 ## Usage
 
-Scan a requirements file, optionally saving a JSON report:
+From the depscan directory, point it at a Python project or a dependency file:
 
 ```sh
-uv run depscan requirements.txt
-uv run depscan requirements.txt --json report.json
-uv run depscan requirements.txt --no-cache
+uv run depscan .
+uv run depscan /path/to/project --json report.json
+uv run depscan /path/to/project --no-cache
+uv run depscan /path/to/project --venv /path/to/project/.venv
+uv run depscan /path/to/requirements.txt
 uv run depscan --help
 uv run depscan --version
 ```
 
-Scanning makes requests to the public OSV API unless a fresh cached result exists.
-Use `--no-cache` to bypass both cache reads and writes and query live OSV data.
+Directories are checked in this order: **`uv.lock` → `poetry.lock` → `Pipfile.lock`
+→ `pyproject.toml` → `requirements.txt`**. The selected file is printed to stderr.
+To override detection, pass the file directly. A broken lockfile is reported,
+not silently replaced with another file.
 
-### Local cache
+Successful lookups are cached for **24 hours**. Use `--no-cache` to bypass the
+cache and fetch current data: cached results may miss newly published advisories.
+Failed lookups are never cached, and expired data isn't used when OSV is unavailable.
+OSV pagination is followed automatically; a failed page makes the lookup incomplete,
+not a clean result. Repeated tokens or more than 100 pages also fail the lookup.
 
-Successful lookups, including results with no known vulnerabilities, are cached
-for 24 hours. Keys include the PyPI ecosystem, normalized package name, and exact
-version. Failed lookups are never cached; expired results are never substituted
-when OSV is unavailable. Cached results may omit newly published advisories until
-refreshed; use `--no-cache` when current data is needed.
+### Reading the results
 
-The cache is `osv.json` in the platform-specific depscan cache directory, selected
-by `platformdirs` (typically `~/.cache/depscan/` on Linux, respecting
-`XDG_CACHE_HOME`). Missing, corrupt, or unreadable cache files trigger live
-lookups. Writes use atomic replacement; cache write failures do not fail a scan.
+- **Vulnerable:** known advisories, with identifiers, severity, and links.
+- **No known vulnerabilities:** OSV returned no advisories—not a guarantee of safety.
+- **Unscanned:** something couldn't be checked; the report explains why.
+- **Non applicable:** an environment marker excluded the requirement.
 
-Terminal output distinguishes **vulnerable**, **no known vulnerabilities**,
-**unscanned**, and **non applicable** declarations. Advisory rows include the
-identifier, published severity (or `UNKNOWN`), and an OSV details link. Unscanned
-and excluded declarations include their source filename, line, and reason.
+Missing severity is shown as `UNKNOWN`; depscan doesn't infer ratings from CVSS vectors.
+The summary counts unique package/version pairs separately from advisory totals.
 
-The summary counts checked package/version pairs once, separately reporting
-vulnerable pairs and advisory totals. The same advisory affecting two distinct
-pairs counts twice. Duplicate declarations remain visible in terminal and JSON
-results but do not inflate these totals. Unscanned and non-applicable counts
-are counts of declarations (including file/include errors).
+For scripts and CI, exit codes are **0** for no known vulnerabilities, **1** when
+vulnerabilities are found, and **2** for errors or incomplete scans—even if findings
+were also reported. Excluded markers don't make a scan incomplete.
 
-Exit codes:
+JSON reports include a schema version, scan and lookup timestamps, source locations,
+results, and errors. The output directory must already exist.
+Exports are atomic: a failed write preserves the previous report.
 
-- `0`: completed scan, no known vulnerabilities.
-- `1`: completed scan, vulnerabilities found.
-- `2`: invalid input, failed lookup, incomplete scan, or failed report export,
-  even when vulnerabilities were also found.
+## What it checks
 
-Excluded environment markers do not make a scan incomplete. Empty files complete
-with zero checked packages; this is not a claim about undeclared dependencies.
+- Exact pins such as `requests==2.31.0` are checked as declared.
+- Lockfiles provide exact versions, including transitive dependencies. All recorded
+  registry versions are checked, including development, optional, and other-platform
+  entries; this is a lockfile audit, not a reconstruction of your active environment.
+- `pyproject.toml` supports static `[project].dependencies`, not optional dependencies,
+  dependency groups, dynamic declarations, or legacy Poetry declarations.
+- Without a lockfile, ranges and unpinned names need **`--venv PATH`** for project
+  scans. depscan reads that environment's package metadata without running its code.
+  Missing or incompatible versions are reported as unscanned.
+- Explicit requirements-file scans still use depscan's installed environment unless
+  `--venv` is supplied. Environment markers are evaluated on the Python running
+  depscan, so use the target platform and Python when scanning manifests.
+- Comments, environment markers, extras, and relative requirements-file includes work.
 
-JSON export uses `schema_version: 1`, a UTC scan-start timestamp (`scanned_at`),
-`results`, and `errors`. Each result preserves its source location and declaration.
-Completed results also include `looked_up_at`, the UTC time of the original OSV
-lookup, preserved on cache hits so result age can be determined independently of
-the scan-start timestamp. Statuses are `vulnerable`, `no_known_vulnerabilities`,
-`unscanned`, and `non_applicable`. Completed lookups include the package/version and advisories;
-other results include a reason. `errors` lists failures with their source location
-(or `null` for a report-wide failure). A failed lookup is never exported as a
-successful empty advisory list. The destination's parent directory must exist.
+Without a lockfile, only declared dependencies are checked; extras don't discover
+additional dependencies. URLs, editable dependencies, local paths, and pip options
+are reported as unscanned. uv's root project and virtual workspace entries are
+excluded from registry checks. Registry packages are looked up in OSV's PyPI ecosystem.
+Automatic fixes and other language ecosystems aren't supported, and depscan never
+installs the packages it scans.
 
-### Requirements file support
+Live lookups require internet access and send package names and versions to public OSV.
+Results depend on its coverage and freshness.
 
-- Exact pins use the declared version. Ranges and unpinned dependencies need a
-  matching version installed in the Python environment running depscan.
-- Comments, environment markers, extras, and relative `-r` / `--requirement`
-  includes are supported. Extras do not discover additional dependencies.
-- URLs, editable dependencies, local packages, and pip options are unsupported
-  and reported as `unscanned`, along with unreadable files and include cycles.
-
-Do not install the example requirements; they intentionally demonstrate missing,
-excluded, and unsupported dependencies.
-
-### OSV lookups (Python API)
-
-The lookup client accepts selected package versions independently of the reader:
-
-```python
-from depscan.models import PackageVersion
-from depscan.osv import lookup_packages
-
-results = lookup_packages([PackageVersion(name="requests", version="2.31.0")])
-for result in results:
-    print(result.model_dump_json())
-```
-
-This makes real requests to the public OSV API. Each normalized package name and
-exact version is queried once per call, with a 5-second connection timeout and a
-30-second read timeout. These are not a total scan deadline. The Python API uses
-live data by default, with no automatic retries. To enable persistent caching,
-pass `cache=LookupCache()` from `depscan.cache` to `lookup_packages`.
-
-Results have status `success` with an `advisories` list (empty means **no known
-vulnerabilities**), or `failed` with a reason. Failed lookups never become empty
-successful results. Each advisory includes its identifier, an OSV details link,
-and severity. Severity copies recognized `database_specific.severity` labels
-(`LOW`, `MODERATE`, `MEDIUM`, `HIGH`, `CRITICAL`, case-insensitive); missing or
-unrecognized labels, including CVSS-only data, produce `UNKNOWN`. CVSS vectors
-are not scored and ratings are not inferred.
+The files in [`examples/`](examples/) demonstrate supported and unsupported inputs.
+**Don't install those requirements.**
 
 ## Development
 
@@ -132,4 +101,24 @@ uv run ruff format --check .
 uv run mypy
 ```
 
-Source code is in `src/depscan/`, and tests are in `tests/`.
+Normal tests are offline and mock HTTP responses. GitHub Actions runs the same
+checks on pushes and pull requests using the locked dependencies.
+
+### Architecture
+
+In `src/depscan/`, `cli.py` orchestrates scanning and exit codes;
+`project.py` detects manifests and reads lockfiles; `requirements.py` parses
+declarations and selects versions; `osv.py` performs HTTP
+lookups and interprets advisories; and `cache.py` handles expiring local storage.
+`models.py` defines validated shared data, while `report.py` renders terminal and
+JSON output without networking. Corresponding behavior tests live in `tests/`.
+
+## Next steps
+
+- Support optional dependency groups in `pyproject.toml`.
+- Batch OSV queries while preserving per-package failure reporting.
+- Add Windows and macOS CI coverage.
+
+## License
+
+[MIT](LICENSE).

@@ -17,8 +17,8 @@ from depscan.models import (
     UnscannedRequirement,
 )
 from depscan.osv import lookup_packages
+from depscan.project import read_project
 from depscan.report import render_terminal, write_json
-from depscan.requirements import read_requirements
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +30,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=version("depscan"))
     parser.add_argument(
-        "requirements", type=Path, help="UTF-8 requirements file to scan"
+        "requirements", type=Path, help="Python project directory or dependency file"
+    )
+    parser.add_argument(
+        "--venv",
+        type=Path,
+        metavar="PATH",
+        help="read installed versions from this venv without executing its code",
     )
     parser.add_argument(
         "--json", type=Path, metavar="PATH", help="also export a JSON report"
@@ -41,14 +47,29 @@ def main(argv: list[str] | None = None) -> int:
         help="bypass both cache reads and writes; query live OSV data",
     )
     args = parser.parse_args(argv)
-    # Protect the root input and source files represented in the results.
+    # Track all inputs, including included files with no declarations.
     try:
-        requirements = read_requirements(args.requirements)
+        input_paths: set[Path] = set()
+        selected, requirements = read_project(
+            args.requirements, venv=args.venv, input_paths=input_paths
+        )
+        if args.requirements.is_dir():
+            print(f"Dependency source: {selected}", file=sys.stderr)
         if args.json is not None:
             try:
                 output = args.json.resolve()
-                overwrites_input = output == args.requirements.resolve() or any(
-                    output == item.source.path.resolve() for item in requirements
+                protected_paths = {
+                    args.requirements.resolve(),
+                    selected.resolve(),
+                    *input_paths,
+                    *(item.source.path.resolve() for item in requirements),
+                }
+                overwrites_input = output in protected_paths or (
+                    output.exists()
+                    and any(
+                        path.exists() and output.samefile(path)
+                        for path in protected_paths
+                    )
                 )
             except (OSError, ValueError) as exc:
                 print(f"depscan: invalid JSON output path: {exc}", file=sys.stderr)

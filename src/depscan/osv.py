@@ -20,6 +20,7 @@ from depscan.models import (
 
 _QUERY_URL = "https://api.osv.dev/v1/query"
 _TIMEOUT = (5.0, 30.0)  # Connection timeout, then read timeout (seconds).
+_MAX_PAGES = 100
 
 
 class _OSVAdvisory(BaseModel):
@@ -34,6 +35,7 @@ class _OSVResponse(BaseModel):
 
     # OSV returns {} when there are no known vulnerabilities.
     vulns: list[_OSVAdvisory] = Field(default_factory=list[_OSVAdvisory])
+    next_page_token: str = ""
 
 
 def lookup_packages(
@@ -66,27 +68,49 @@ def lookup_packages(
 
 
 def _lookup_package(package: PackageVersion) -> LookupResult:
+    advisories: list[Advisory] = []
+    page_token = ""
+    seen_tokens: set[str] = set()
     try:
-        with requests.post(
-            _QUERY_URL,
-            json={
+        for _ in range(_MAX_PAGES):
+            query: dict[str, object] = {
                 "package": {"ecosystem": "PyPI", "name": package.name},
                 "version": package.version,
-            },
-            timeout=_TIMEOUT,
-            allow_redirects=False,
-        ) as response:
-            if not 200 <= response.status_code < 300:
+            }
+            if page_token:
+                query["page_token"] = page_token
+            with requests.post(
+                _QUERY_URL,
+                json=query,
+                timeout=_TIMEOUT,
+                allow_redirects=False,
+            ) as response:
+                if not 200 <= response.status_code < 300:
+                    return FailedLookup(
+                        package=package,
+                        reason=f"OSV returned HTTP {response.status_code}.",
+                    )
+                try:
+                    payload = _OSVResponse.model_validate(response.json())
+                except ValueError, ValidationError:
+                    return FailedLookup(
+                        package=package, reason="OSV returned a malformed response."
+                    )
+            advisories.extend(_advisory(item) for item in payload.vulns)
+            page_token = payload.next_page_token
+            if not page_token:
+                break
+            if page_token in seen_tokens:
                 return FailedLookup(
                     package=package,
-                    reason=f"OSV returned HTTP {response.status_code}.",
+                    reason="OSV pagination repeated a token; lookup is incomplete.",
                 )
-            try:
-                payload = _OSVResponse.model_validate(response.json())
-            except ValueError, ValidationError:
-                return FailedLookup(
-                    package=package, reason="OSV returned a malformed response."
-                )
+            seen_tokens.add(page_token)
+        else:
+            return FailedLookup(
+                package=package,
+                reason=f"OSV pagination exceeded {_MAX_PAGES} pages.",
+            )
     except requests.Timeout:
         return FailedLookup(package=package, reason="OSV request timed out.")
     except requests.RequestException as exc:
@@ -94,7 +118,7 @@ def _lookup_package(package: PackageVersion) -> LookupResult:
 
     return SuccessfulLookup(
         package=package,
-        advisories=tuple(_advisory(item) for item in payload.vulns),
+        advisories=tuple(advisories),
         looked_up_at=datetime.now(UTC),
     )
 

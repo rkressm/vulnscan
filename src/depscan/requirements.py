@@ -2,6 +2,7 @@
 
 import re
 import shlex
+from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
 
@@ -23,22 +24,34 @@ from depscan.models import (
 _MAX_INCLUDE_DEPTH = 100
 
 
-def read_requirements(path: str | Path) -> list[RequirementResult]:
+def read_requirements(
+    path: str | Path,
+    *,
+    installed_versions: Mapping[str, str] | None = None,
+    input_paths: set[Path] | None = None,
+) -> list[RequirementResult]:
     """Read a UTF-8 requirements file and its relative includes in source order.
 
     File errors are unscanned results, not exceptions. Included-file errors point
     to the include directive; a root-file error uses line 1. Duplicate declarations
-    are preserved. Extras do not expand into additional dependencies.
+    are preserved. Extras do not expand into additional dependencies. If provided,
+    input_paths collects resolved paths, even for files without declarations.
     """
     source = SourceLocation(path=Path(path).absolute(), line=1, text="")
-    return _read_file(Path(path), (), source)
+    return _read_file(Path(path), (), source, installed_versions, input_paths)
 
 
 def _read_file(
-    path: Path, include_chain: tuple[Path, ...], origin: SourceLocation
+    path: Path,
+    include_chain: tuple[Path, ...],
+    origin: SourceLocation,
+    installed_versions: Mapping[str, str] | None,
+    input_paths: set[Path] | None,
 ) -> list[RequirementResult]:
     try:
         path = path.resolve()
+        if input_paths is not None:
+            input_paths.add(path)
         if path in include_chain:
             chain = " -> ".join(str(item) for item in (*include_chain, path))
             return [
@@ -74,10 +87,18 @@ def _read_file(
                 results.append(UnscannedRequirement(source=source, reason=str(exc)))
                 continue
             results.extend(
-                _read_file(path.parent / target, (*include_chain, path), source)
+                _read_file(
+                    path.parent / target,
+                    (*include_chain, path),
+                    source,
+                    installed_versions,
+                    input_paths,
+                )
             )
         else:
-            results.append(_resolve_requirement(text, source))
+            results.append(
+                resolve_requirement(text, source, installed_versions=installed_versions)
+            )
     return results
 
 
@@ -113,7 +134,13 @@ def _include_target(text: str) -> str:
     return parts[0]
 
 
-def _resolve_requirement(text: str, source: SourceLocation) -> RequirementResult:
+def resolve_requirement(
+    text: str,
+    source: SourceLocation,
+    *,
+    installed_versions: Mapping[str, str] | None = None,
+) -> RequirementResult:
+    """Resolve a declaration, optionally using an explicitly selected environment."""
     try:
         requirement = Requirement(text)
     except InvalidRequirement as exc:
@@ -156,13 +183,18 @@ def _resolve_requirement(text: str, source: SourceLocation) -> RequirementResult
         selected_version = pinned_versions[0]
     else:
         try:
-            selected_version = metadata.version(requirement.name)
-        except metadata.PackageNotFoundError:
+            selected_version = (
+                metadata.version(requirement.name)
+                if installed_versions is None
+                else installed_versions[name]
+            )
+        except metadata.PackageNotFoundError, KeyError:
             return UnscannedRequirement(
                 source=source,
                 reason=(
                     "Package is not installed; ranges and unpinned requirements need "
-                    "an installed version in the scanner's Python environment."
+                    "an installed version in the selected Python environment. "
+                    "For project scans, select one with --venv PATH."
                 ),
                 name=name,
             )
