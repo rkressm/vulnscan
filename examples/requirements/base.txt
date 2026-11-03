@@ -1,0 +1,2 @@
+# Exact pins can be read without installing the package.
+requests==2.31.0

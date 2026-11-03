@@ -1,0 +1,6 @@
+# Demonstration input only: do not install these dependencies.
+-r requirements/base.txt
+requests[socks]>=2.28,<3
+depscan-example-missing-package>=1
+demo==1.0; python_version < "0"
+-e ./unsupported-local-package

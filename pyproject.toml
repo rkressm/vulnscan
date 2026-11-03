@@ -1,0 +1,47 @@
+[project]
+name = "depscan"
+version = "0.1.0"
+description = "Scan declared Python dependencies for known vulnerabilities using OSV."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "packaging>=26.3",
+    "platformdirs>=4.14.3",
+    "pydantic>=2.14.2",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+depscan = "depscan.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "types-requests>=2.33.0.20261030",
+]

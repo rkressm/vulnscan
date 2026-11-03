@@ -1,0 +1,39 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+
+# Build output
+dist/
+build/
+*.egg-info/
+
+# Coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local environment files (keep shareable examples)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Editor and OS clutter
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local planning notes
+plan.md
