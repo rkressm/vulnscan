@@ -1,0 +1,9 @@
+{
+  "lockfileVersion": 1,
+  "dependencies": {
+    "@babel/core": {
+      "version": "7.12.9",
+      "dependencies": {"@babel/code-frame": {"version": "7.18.6"}}
+    }
+  }
+}

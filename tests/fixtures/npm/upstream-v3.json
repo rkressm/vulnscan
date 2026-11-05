@@ -1,0 +1,12 @@
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "npm", "version": "10.9.0", "workspaces": ["docs"]},
+    "docs": {"name": "@npmcli/docs", "version": "1.0.0"},
+    "node_modules/string-width-cjs": {
+      "name": "string-width", "version": "4.2.3",
+      "resolved": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz",
+      "inBundle": true
+    }
+  }
+}
