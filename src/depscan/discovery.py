@@ -74,11 +74,12 @@ def _hint_manager(value: object) -> str | None:
     manager, separator, version = value.partition("@")
     if not separator or manager not in {"npm", "yarn", "pnpm", "bun"}:
         return None
-    # Integrity metadata is distinct from SemVer build metadata. In particular,
-    # a malformed sha suffix must not pass as an otherwise valid build string.
+    # Reserve numeric SHA algorithm tokens for integrity metadata, not arbitrary
+    # build identifiers such as "shared.1" or "shadow". Malformed/unsupported
+    # explicit integrity must not pass as an otherwise valid build string.
     before_hash, plus, suffix = version.rpartition("+")
-    if plus and suffix.startswith("sha"):
-        algorithm, dot, digest = suffix.partition(".")
+    algorithm, dot, digest = suffix.partition(".")
+    if plus and re.fullmatch(r"sha[0-9]+", algorithm):
         length = _HASH_LENGTHS.get(algorithm)
         if (
             not dot

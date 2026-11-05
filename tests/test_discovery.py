@@ -117,6 +117,9 @@ def test_precedence_does_not_parse_or_fall_back(
     ("hint", "selected"),
     [
         ("npm@10.2.3", "npm-shrinkwrap.json"),
+        ("npm@1.2.3+shared.1", "npm-shrinkwrap.json"),
+        ("npm@1.2.3+shadow", "npm-shrinkwrap.json"),
+        ("npm@1.2.3+sha224extra", "npm-shrinkwrap.json"),
         ("yarn@v4.2.1", "yarn.lock"),
         ("pnpm@9.0.0-rc.1+build.5", "pnpm-lock.yaml"),
         ("bun@1.2.3", "bun.lock"),
@@ -130,6 +133,7 @@ def test_precedence_does_not_parse_or_fall_back(
             ]
         ],
         (f"npm@10.2.3+build+sha224.{'a' * 56}", "npm-shrinkwrap.json"),
+        (f"npm@1.2.3+shared.1+sha224.{'a' * 56}", "npm-shrinkwrap.json"),
     ],
 )
 def test_valid_cross_manager_hints(tmp_path: Path, hint: str, selected: str) -> None:
@@ -175,6 +179,8 @@ def test_valid_cross_manager_hints(tmp_path: Path, hint: str, selected: str) -> 
         " npm@10.2.3",
         "npm@10.2.3 ",
         "npm@10.2.3+sha224.abc",
+        "npm@10.2.3+sha224",
+        "npm@10.2.3+sha224.",
         f"npm@10.2.3+sha256.{'g' * 64}",
         f"npm@10.2.3+sha1.{'a' * 40}",
         f"npm@+sha224.{'a' * 56}",
