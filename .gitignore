@@ -22,6 +22,9 @@ build/
 coverage.xml
 htmlcov/
 
+# Generated scan report
+/src/depscan/report.json
+
 # Local environment files (keep shareable examples)
 .env
 .env.*
@@ -36,5 +39,5 @@ htmlcov/
 Thumbs.db
 
 # Local planning notes
-plan.md
+plan*
 AGENT.md
