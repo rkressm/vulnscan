@@ -8,12 +8,15 @@ from pathlib import Path
 
 from depscan.cache import LookupCache
 from depscan.models import (
+    DependencySource,
     FailedLookup,
     ReadyRequirement,
     ScanError,
     ScannedRequirement,
     ScanReport,
     ScanResult,
+    SourceKind,
+    SourceSummary,
     UnscannedRequirement,
 )
 from depscan.osv import lookup_packages
@@ -50,8 +53,12 @@ def main(argv: list[str] | None = None) -> int:
     # Track all inputs, including included files with no declarations.
     try:
         input_paths: set[Path] = set()
+        source_errors: list[ScanError] = []
         selected, requirements = read_project(
-            args.requirements, venv=args.venv, input_paths=input_paths
+            args.requirements,
+            venv=args.venv,
+            input_paths=input_paths,
+            source_errors=source_errors,
         )
         if args.requirements.is_dir():
             print(f"Dependency source: {selected}", file=sys.stderr)
@@ -103,10 +110,19 @@ def main(argv: list[str] | None = None) -> int:
                 if isinstance(lookup, FailedLookup):
                     results.append(
                         UnscannedRequirement(
-                            source=item.source, name=package.name, reason=lookup.reason
+                            ecosystem=package.ecosystem,
+                            source=item.source,
+                            name=package.name,
+                            reason=lookup.reason,
                         )
                     )
-                    errors.append(ScanError(source=item.source, reason=lookup.reason))
+                    errors.append(
+                        ScanError(
+                            ecosystem=package.ecosystem,
+                            source=item.source,
+                            reason=lookup.reason,
+                        )
+                    )
                 else:
                     results.append(
                         ScannedRequirement(
@@ -124,10 +140,46 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 results.append(item)
                 if isinstance(item, UnscannedRequirement):
-                    errors.append(ScanError(source=item.source, reason=item.reason))
+                    errors.append(
+                        ScanError(
+                            ecosystem=item.ecosystem,
+                            source=item.source,
+                            reason=item.reason,
+                        )
+                    )
 
+        kinds: dict[str, SourceKind] = {
+            "uv.lock": "uv",
+            "poetry.lock": "poetry",
+            "Pipfile.lock": "pipfile",
+            "pyproject.toml": "pyproject",
+        }
+        source = (
+            None
+            if selected.is_dir()
+            else DependencySource(
+                ecosystem="PyPI",
+                path=selected.absolute(),
+                kind=kinds.get(selected.name, "requirements"),
+            )
+        )
+        summary = SourceSummary(
+            ecosystem="PyPI",
+            status="absent"
+            if source is None
+            else "failed"
+            if source_errors
+            else "success",
+            source=source,
+            candidates=(source,) if source else (),
+        )
         report = ScanReport(
-            scanned_at=scanned_at, results=tuple(results), errors=tuple(errors)
+            scanned_at=scanned_at,
+            results=tuple(results),
+            errors=tuple(errors),
+            detected_ecosystems=("PyPI",) if source else (),
+            sources=(summary,),
+            input_paths=tuple(sorted(input_paths)),
         )
         if args.json is not None:
             try:

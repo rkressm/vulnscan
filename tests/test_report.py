@@ -17,7 +17,7 @@ def test_atomic_report_export(tmp_path: Path) -> None:
 
     write_json(report, destination)
 
-    assert json.loads(destination.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert json.loads(destination.read_text(encoding="utf-8"))["schema_version"] == 2
     assert list(tmp_path.iterdir()) == [destination]
 
 

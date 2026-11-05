@@ -16,6 +16,7 @@ from depscan.models import (
     PackageVersion,
     ReadyRequirement,
     RequirementResult,
+    ScanError,
     SourceLocation,
     UnscannedRequirement,
 )
@@ -29,6 +30,7 @@ def read_requirements(
     *,
     installed_versions: Mapping[str, str] | None = None,
     input_paths: set[Path] | None = None,
+    source_errors: list[ScanError] | None = None,
 ) -> list[RequirementResult]:
     """Read a UTF-8 requirements file and its relative includes in source order.
 
@@ -36,9 +38,13 @@ def read_requirements(
     to the include directive; a root-file error uses line 1. Duplicate declarations
     are preserved. Extras do not expand into additional dependencies. If provided,
     input_paths collects resolved paths, even for files without declarations.
+    source_errors optionally collects fatal root read errors; entry/include errors
+    remain unscanned declarations in a successfully read root document.
     """
     source = SourceLocation(path=Path(path).absolute(), line=1, text="")
-    return _read_file(Path(path), (), source, installed_versions, input_paths)
+    return _read_file(
+        Path(path), (), source, installed_versions, input_paths, source_errors
+    )
 
 
 def _read_file(
@@ -47,8 +53,11 @@ def _read_file(
     origin: SourceLocation,
     installed_versions: Mapping[str, str] | None,
     input_paths: set[Path] | None,
+    source_errors: list[ScanError] | None,
 ) -> list[RequirementResult]:
     try:
+        if input_paths is not None:
+            input_paths.add(path.absolute())
         path = path.resolve()
         if input_paths is not None:
             input_paths.add(path)
@@ -56,21 +65,34 @@ def _read_file(
             chain = " -> ".join(str(item) for item in (*include_chain, path))
             return [
                 UnscannedRequirement(
-                    source=origin, reason=f"Circular requirements include: {chain}"
+                    ecosystem="PyPI",
+                    source=origin,
+                    reason=f"Circular requirements include: {chain}",
                 )
             ]
         if len(include_chain) >= _MAX_INCLUDE_DEPTH:
             return [
                 UnscannedRequirement(
+                    ecosystem="PyPI",
                     source=origin,
                     reason="Requirements include depth exceeds 100 files.",
                 )
             ]
         content = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError, ValueError) as exc:
+        if not include_chain and source_errors is not None:
+            source_errors.append(
+                ScanError(
+                    ecosystem="PyPI",
+                    source=origin,
+                    reason=f"Cannot read requirements file {path}: {exc}",
+                )
+            )
         return [
             UnscannedRequirement(
-                source=origin, reason=f"Cannot read requirements file {path}: {exc}"
+                ecosystem="PyPI",
+                source=origin,
+                reason=f"Cannot read requirements file {path}: {exc}",
             )
         ]
 
@@ -84,7 +106,11 @@ def _read_file(
             try:
                 target = _include_target(text)
             except ValueError as exc:
-                results.append(UnscannedRequirement(source=source, reason=str(exc)))
+                results.append(
+                    UnscannedRequirement(
+                        ecosystem="PyPI", source=source, reason=str(exc)
+                    )
+                )
                 continue
             results.extend(
                 _read_file(
@@ -93,6 +119,7 @@ def _read_file(
                     source,
                     installed_versions,
                     input_paths,
+                    source_errors,
                 )
             )
         else:
@@ -145,6 +172,7 @@ def resolve_requirement(
         requirement = Requirement(text)
     except InvalidRequirement as exc:
         return UnscannedRequirement(
+            ecosystem="PyPI",
             source=source,
             reason=(
                 "Invalid or unsupported requirement (editable dependencies, URLs, "
@@ -156,12 +184,14 @@ def resolve_requirement(
     try:
         if requirement.marker is not None and not requirement.marker.evaluate():
             return NonApplicableRequirement(
+                ecosystem="PyPI",
                 source=source,
                 name=name,
                 reason=f"Environment marker does not match: {requirement.marker}",
             )
     except (UndefinedComparison, UndefinedEnvironmentName) as exc:
         return UnscannedRequirement(
+            ecosystem="PyPI",
             source=source,
             reason=f"Cannot evaluate environment marker: {exc}",
             name=name,
@@ -169,6 +199,7 @@ def resolve_requirement(
 
     if requirement.url is not None:
         return UnscannedRequirement(
+            ecosystem="PyPI",
             source=source,
             reason="Direct URL and local path dependencies are unsupported.",
             name=name,
@@ -190,6 +221,7 @@ def resolve_requirement(
             )
         except metadata.PackageNotFoundError, KeyError:
             return UnscannedRequirement(
+                ecosystem="PyPI",
                 source=source,
                 reason=(
                     "Package is not installed; ranges and unpinned requirements need "
@@ -203,6 +235,7 @@ def resolve_requirement(
         parsed_version = Version(selected_version)
     except InvalidVersion:
         return UnscannedRequirement(
+            ecosystem="PyPI",
             source=source,
             reason=f"Invalid package version: {selected_version!r}.",
             name=name,
@@ -212,6 +245,7 @@ def resolve_requirement(
     if not requirement.specifier.contains(parsed_version, prereleases=True):
         version_origin = "Declared" if pinned_versions else "Installed"
         return UnscannedRequirement(
+            ecosystem="PyPI",
             source=source,
             reason=(
                 f"{version_origin} version {selected_version} "
@@ -220,5 +254,6 @@ def resolve_requirement(
             name=name,
         )
     return ReadyRequirement(
-        source=source, package=PackageVersion(name=name, version=selected_version)
+        source=source,
+        package=PackageVersion(ecosystem="PyPI", name=name, version=selected_version),
     )

@@ -9,7 +9,12 @@ from typing import Any
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-from depscan.models import RequirementResult, SourceLocation, UnscannedRequirement
+from depscan.models import (
+    RequirementResult,
+    ScanError,
+    SourceLocation,
+    UnscannedRequirement,
+)
 from depscan.requirements import read_requirements, resolve_requirement
 
 _FILES = (
@@ -22,12 +27,18 @@ _FILES = (
 
 
 def read_project(
-    path: Path, *, venv: Path | None = None, input_paths: set[Path] | None = None
+    path: Path,
+    *,
+    venv: Path | None = None,
+    input_paths: set[Path] | None = None,
+    source_errors: list[ScanError] | None = None,
 ) -> tuple[Path, list[RequirementResult]]:
     """Prefer a lockfile; never silently fall back from a broken selected manifest.
 
     Directory scans never inspect the scanner's installed packages. Explicit
     requirements-file scans preserve their original behavior unless --venv is used.
+    source_errors optionally collects fatal source errors without changing the
+    legacy list of requirement results returned to existing callers.
     """
     is_project = path.is_dir()
     selected = (
@@ -37,6 +48,8 @@ def read_project(
     )
     source = SourceLocation(path=selected.absolute(), line=1, text="")
     try:
+        if input_paths is not None and not selected.is_dir():
+            input_paths.add(selected.absolute())
         installed = _installed_versions(venv) if venv is not None else None
         if is_project and installed is None:
             installed = {}
@@ -44,7 +57,10 @@ def read_project(
             raise ValueError(f"No supported Python dependency file found in {path}.")
         if selected.name not in _FILES or selected.name == "requirements.txt":
             return selected, read_requirements(
-                selected, installed_versions=installed, input_paths=input_paths
+                selected,
+                installed_versions=installed,
+                input_paths=input_paths,
+                source_errors=source_errors,
             )
         text = selected.read_text(encoding="utf-8-sig")
         data = (
@@ -55,7 +71,13 @@ def read_project(
         results = _read_manifest(selected, data, installed or {})
         return selected, results
     except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
-        return selected, [UnscannedRequirement(source=source, reason=str(exc))]
+        if source_errors is not None:
+            source_errors.append(
+                ScanError(ecosystem="PyPI", source=source, reason=str(exc))
+            )
+        return selected, [
+            UnscannedRequirement(ecosystem="PyPI", source=source, reason=str(exc))
+        ]
 
 
 def _installed_versions(venv: Path) -> dict[str, str]:
@@ -85,7 +107,7 @@ def _read_manifest(
         # TOML/JSON parsers don't expose line locations: line 1 denotes the document.
         source = SourceLocation(path=path.absolute(), line=1, text=text)
         results.append(
-            UnscannedRequirement(source=source, reason=unsupported)
+            UnscannedRequirement(ecosystem="PyPI", source=source, reason=unsupported)
             if unsupported
             else resolve_requirement(text, source, installed_versions=installed)
         )

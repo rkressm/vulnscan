@@ -108,6 +108,76 @@ def test_project_without_manifest_is_incomplete(
     offline_osv.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "filename,content,status,exit_code",
+    [
+        ("requirements.txt", "", "success", 0),
+        ("uv.lock", "version=1\npackage=[]\n", "success", 0),
+        ("uv.lock", "invalid TOML[", "failed", 2),
+        ("requirements.txt", None, "failed", 2),
+        ("requirements.txt", "-e ./local\n", "success", 2),
+        ("requirements.txt", "-r missing.txt\n", "success", 2),
+    ],
+)
+def test_python_source_context_in_schema_v2(
+    tmp_path: Path,
+    filename: str,
+    content: str | None,
+    status: str,
+    exit_code: int,
+) -> None:
+    source = tmp_path / filename
+    if content is not None:
+        source.write_text(content, encoding="utf-8")
+    destination = tmp_path / "report.json"
+    assert main([str(source), "--json", str(destination)]) == exit_code
+    data = json.loads(destination.read_text(encoding="utf-8"))
+    assert data["detected_ecosystems"] == ["PyPI"]
+    assert data["sources"][0]["status"] == status
+    assert data["sources"][0]["source"]["path"] == str(source)
+    assert data["sources"][0]["candidates"] == [data["sources"][0]["source"]]
+    assert str(source) in data["input_paths"]
+    assert all(error["ecosystem"] == "PyPI" for error in data["errors"])
+    assert all(result.get("ecosystem", "PyPI") == "PyPI" for result in data["results"])
+
+
+def test_lookup_failure_retains_package_ecosystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from depscan.models import (
+        FailedLookup,
+        PackageVersion,
+        ReadyRequirement,
+        SourceLocation,
+    )
+
+    source = tmp_path / "requirements.txt"
+    source.write_text("demo==1.2.3", encoding="utf-8")
+    # Exercise shared orchestration only: npm readers/routing are later tasks.
+    package = PackageVersion(ecosystem="npm", name="demo", version="1.2.3")
+    monkeypatch.setattr(
+        "depscan.cli.read_project",
+        lambda *args, **kwargs: (
+            source,
+            [
+                ReadyRequirement(
+                    source=SourceLocation(path=source, line=1, text="demo"),
+                    package=package,
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "depscan.cli.lookup_packages",
+        lambda *args, **kwargs: [FailedLookup(package=package, reason="Unavailable")],
+    )
+    destination = tmp_path / "report.json"
+    assert main([str(source), "--json", str(destination)]) == 2
+    data = json.loads(destination.read_text(encoding="utf-8"))
+    assert data["results"][0]["ecosystem"] == data["errors"][0]["ecosystem"] == "npm"
+
+
 @pytest.mark.parametrize("content", ["", "# comment only\n", "\n  \n"])
 @pytest.mark.parametrize("project_scan", [False, True])
 def test_json_cannot_overwrite_empty_nested_include(
@@ -204,7 +274,7 @@ def test_vulnerabilities_and_json(
     assert "UNKNOWN" in output
     assert "https://osv.dev/vulnerability/TEST-2" in output
     data = json.loads(destination.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert datetime.fromisoformat(data["scanned_at"]).utcoffset() is not None
     assert data["errors"] == []
     assert len(data["results"]) == 2

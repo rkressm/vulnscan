@@ -558,6 +558,116 @@ grammar checks in their owning reader tasks. Unknown versions fail explicitly.
 No package-manager release-version-to-lock-version inference is authorized.
 No dependency vulnerability audit was performed; release age is not such an audit.
 
+## T02 implemented interfaces and compatibility decisions
+
+The shared records above now exist in `depscan.models`. These are frozen, strict,
+extra-forbid Pydantic models with tuple collections. `PackageVersion.identity`
+is the canonical `(ecosystem, name, version)` tuple; equality/hash use the same
+canonical fields. `ReadyRequirement.ecosystem` and
+`ScannedRequirement.ecosystem` are derived properties of their packages. None of
+these properties is serialized or accepted as an extra constructor field.
+npm name/version validation lives entirely in `PackageVersion`, independently
+of the future T06 helper module, so T08 can use it immediately. Python versions
+remain selected strings, not normalized PEP 440 representations.
+
+`SourceSummary` requires a selected source to occur in `candidates`; success
+requires a source, failed permits a null source (discovery failure), absent has
+no source/candidates, and ambiguity requires competing npm lock managers.
+`SourceSelection` additionally requires contextual errors for failed/ambiguous
+states. npm shrinkwrap/package-lock count as one manager; Bun text/binary count
+as one manager; the manifest does not create a competing lock manager.
+`DiscoveryResult` rejects duplicate ecosystem selections. Ordering, absolute
+path registration, path sorting/deduplication and complete discovery evidence are
+producer responsibilities, not automatic coercions by these strict records.
+
+### Legacy Python adapters during T02
+
+The existing Python reader return values and all existing call forms remain
+supported. An additive optional keyword exposes **fatal root/source errors** to
+the transitional CLI without guessing from diagnostic strings:
+
+```python
+def read_requirements(
+    path: str | Path,
+    *,
+    installed_versions: Mapping[str, str] | None = None,
+    input_paths: set[Path] | None = None,
+    source_errors: list[ScanError] | None = None,
+) -> list[RequirementResult]: ...
+
+
+def read_project(
+    path: Path,
+    *,
+    venv: Path | None = None,
+    input_paths: set[Path] | None = None,
+    source_errors: list[ScanError] | None = None,
+) -> tuple[Path, list[RequirementResult]]: ...
+```
+
+`source_errors` is an optional caller-owned append-only output list. Entries
+have explicit PyPI context. Requirements root IO/decode/path failures append an
+error; include/entry failures remain unscanned declarations, not failed root
+documents. Project IO/decode/syntax/overall-shape/environment failures append an
+error. Legacy failure placeholders remain in returned lists for compatibility;
+T11 must **not** copy these placeholders into a failed `SourceReadResult`, whose
+requirements must be empty. Transfer the contextual errors instead. Empty reads
+leave both lists empty. This additive diagnostic keyword does not alter Python
+version/marker/include/environment selection behavior.
+
+The transitional CLI emits schema 2 with the selected Python source, candidate,
+detected PyPI ecosystem, and collected input paths. Root failures have failed
+summaries; entry and lookup failures retain success summaries. Lookup errors and
+unscanned results take ecosystem from the package, not from a PyPI default.
+Directory-with-no-Python-source emits an absent Python summary and no detected
+ecosystems, with the legacy diagnostic and exit 2. T02 does not claim npm
+discovery: it emits no npm absence row and no npm support until T11 connects T05.
+Full candidate enumeration, environment metadata tracking, per-ecosystem terminal
+rendering, npm OSV routing, and cache transitions remain their assigned tasks.
+
+### Schema defaults are construction compatibility, not inferred evidence
+
+Package/unscanned/non-applicable constructors default to PyPI; npm callers must
+be explicit. `ScanError.ecosystem=None` remains valid only for global failures.
+Shared read/selection validators reject errors missing their source ecosystem.
+
+`ScanReport` can still be constructed with only timestamp/results/errors. Its
+new tuples default empty and schema defaults to 2, but **such a report now exits
+2 because it has no detected ecosystems**, even if it contains a finding.
+No implicit ecosystem/source inference occurs. This is a deliberate, tested
+behavioral change: legacy construction is accepted, not treated as completed
+discovery. Reports with explicitly detected ecosystems are not rejected merely
+because sources were omitted; cross-field discovery completeness is an
+orchestrator responsibility during migration. Failed/ambiguous summary states
+force exit 2 even without top-level errors; absent rows alone do not.
+
+An explicit successful empty source is therefore:
+
+```python
+summary = SourceSummary(
+    ecosystem="npm", status="success", source=src, candidates=(src,)
+)
+report = ScanReport(
+    scanned_at=datetime.now(UTC),
+    results=(),
+    errors=(),
+    detected_ecosystems=("npm",),
+    sources=(summary,),
+    input_paths=(src.path,),
+)
+assert report.exit_code == 0
+```
+
+A failed source uses status `failed`, retains its source/candidates, and moves
+read errors once to report `errors`; it exits 2 with zero package results. A
+selection failure has a failed summary with null source and retains candidates.
+Reader signatures in “Functions and module boundaries” are stable and remain
+unimplemented here; their `SourceReadResult` examples above are executable model
+constructions, not claims that the later readers are available. T06 must
+implement `exact_npm_version` via shared model validation, not a second SemVer
+grammar. All examples require the shown model imports plus `Path`, and timestamp
+examples require `from datetime import UTC, datetime`.
+
 ## T01 validation
 
 After dependency synchronization, offline pytest again passed all 210 tests;
@@ -569,3 +679,15 @@ trailing commas, URL strings containing `//`, and JSON5 duplicate-key rejection.
 Registry and upstream-file inspection used read-only HTTP through Python; no
 project JavaScript dependencies were installed or executed. `uv sync --frozen`
 installed only the scanner's approved Python parser dependencies in this worktree.
+
+## T02 validation
+
+Base `9de16c1270c5f5a9342e41967da136ff2d63b225`, branch `agent/T02`, isolated
+worktree `/home/remi/Développement/smallprojects/vulnscanner-T02-20261105`.
+All checks used `uv run --offline --frozen`: pytest **312 passed**, Ruff check
+passed, Ruff format check **18 files formatted**, mypy **15 source files, no
+issues**. `git diff --check` passed. Formatting was limited to touched files.
+Dependencies, lockfile, planning files, main checkout and its ignored report
+were not modified. The original 210-test Python baseline remains passing;
+additional tests cover identity, raw npm validation, contextual state invariants,
+schema defaults/exits and Python CLI failed/empty/partial source compatibility.

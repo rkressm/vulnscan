@@ -10,6 +10,7 @@ from depscan.models import (
     NonApplicableRequirement,
     ReadyRequirement,
     RequirementResult,
+    ScanError,
     UnscannedRequirement,
 )
 from depscan.requirements import read_requirements
@@ -32,6 +33,34 @@ def read_text(tmp_path: Path, text: str) -> list[RequirementResult]:
     path = tmp_path / "requirements.txt"
     path.write_text(text, encoding="utf-8")
     return read_requirements(path)
+
+
+def test_root_read_failure_has_explicit_python_context(tmp_path: Path) -> None:
+    path = tmp_path / "missing.txt"
+    errors: list[ScanError] = []
+    inputs: set[Path] = set()
+    results = read_requirements(path, source_errors=errors, input_paths=inputs)
+    assert len(errors) == 1
+    assert errors[0].ecosystem == "PyPI"
+    assert errors[0].source == results[0].source
+    assert isinstance(results[0], UnscannedRequirement)
+    assert results[0].ecosystem == "PyPI"
+    assert path in inputs
+
+
+def test_empty_and_entry_errors_are_not_failed_documents(tmp_path: Path) -> None:
+    path = tmp_path / "requirements.txt"
+    errors: list[ScanError] = []
+    path.write_text("", encoding="utf-8")
+    assert read_requirements(path, source_errors=errors) == []
+    path.write_text("-r missing.txt\n-e ./local\n", encoding="utf-8")
+    results = read_requirements(path, source_errors=errors)
+    assert len(results) == 2
+    assert all(
+        isinstance(item, UnscannedRequirement) and item.ecosystem == "PyPI"
+        for item in results
+    )
+    assert errors == []
 
 
 @pytest.mark.parametrize(
