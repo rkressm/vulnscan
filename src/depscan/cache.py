@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
-from packaging.utils import canonicalize_name
 from platformdirs import user_cache_path
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -20,12 +19,12 @@ _TTL = timedelta(hours=24)
 class _CacheFile(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2]
     entries: dict[str, SuccessfulLookup]
 
 
 def _key(package: PackageVersion) -> str:
-    return json.dumps(["PyPI", canonicalize_name(package.name), package.version])
+    return json.dumps(package.identity)
 
 
 class LookupCache:
@@ -34,6 +33,9 @@ class LookupCache:
     Cache I/O is optional: unreadable or corrupt files are treated as empty, and
     write failures leave scanning unaffected. Concurrent writers may lose cache
     entries, but atomic replacement prevents partial JSON files.
+
+    Schema 2 requires ecosystem-aware identities. Legacy or unversioned files are
+    ignored, then replaced with schema 2 after the next successful lookup.
     """
 
     def __init__(
@@ -58,7 +60,7 @@ class LookupCache:
         result = self._entries.get(_key(package))
         if result is None or result.looked_up_at is None:
             return None
-        if _key(result.package) != _key(package):
+        if result.package.identity != package.identity:
             return None
         age = self._clock() - result.looked_up_at
         if not timedelta(0) <= age < _TTL:
@@ -76,7 +78,9 @@ class LookupCache:
         temporary: Path | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = _CacheFile(entries=self._entries).model_dump_json(indent=2)
+            payload = _CacheFile(
+                schema_version=2, entries=self._entries
+            ).model_dump_json(indent=2)
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=self.path.parent, delete=False
             ) as stream:
