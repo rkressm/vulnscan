@@ -63,6 +63,13 @@ unknown versions, malformed shapes, local/git/workspace and unverifiable tarball
   A parent's npm alias declaration can supply the target for an exact locked
   version even if the declared range itself is unresolved. Conflicting evidence
   stays unscanned. The installation alias never overrides a known real target.
+  Requester declarations (including v1 `requires`) join to their nearest recorded
+  installation along the requester's ancestor paths, so hoisted alias evidence
+  is retained without leaking across shadowing nested records. Conflicting alias
+  targets or alias-versus-ordinary requests for the same record stay unscanned.
+  This is a lexical inventory join, not dependency range/installation resolution.
+  Alias version, explicit name, requester and public-registry URL evidence are
+  reconciled before validating a registry-relative source against the real target.
 - Recognized public tarball URL hosts: `registry.npmjs.org`,
   `registry.yarnpkg.com`; their `/<package>/-/<artifact>` paths identify packages.
   v1 registry-relative `<package>/-/<artifact>` resolutions are also accepted.

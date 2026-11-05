@@ -2,7 +2,7 @@
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
@@ -12,7 +12,6 @@ from depscan.javascript.identity import resolve_npm_declaration
 from depscan.models import (
     DependencySource,
     PackageVersion,
-    ReadyRequirement,
     RequirementResult,
     ScanError,
     SourceLocation,
@@ -158,32 +157,40 @@ def _lock(
         if not isinstance(tree, dict):
             raise ValueError("dependencies must be an object.")
         # Iterative traversal does not impose a Python recursion limit on the tree.
-        pending = [(tree, "dependencies", document)]
+        pending = [(tree, "dependencies", "")]
+        inventory: dict[str, Any] = {"": document}
+        locations = []
         while pending:
-            entries, prefix, parent = pending.pop()
+            entries, prefix, parent_path = pending.pop()
             for name, record in entries.items():
                 text = f"{prefix}[{json.dumps(name)}]"
                 location = _location(path, text)
+                install_path = f"{parent_path}/node_modules/{name}".lstrip("/")
+                inventory[install_path] = record
                 if not isinstance(record, dict):
                     errors.append(
                         _error(path, text, "Dependency record must be an object.")
                     )
                     continue
-                requirements.append(
-                    _record(name, record, location, _aliases(parent, name))
-                )
+                locations.append((install_path, name, record, location))
                 if "dependencies" in record:
                     nested = record["dependencies"]
                     if isinstance(nested, dict):
-                        pending.append((nested, f"{text}.dependencies", record))
+                        pending.append((nested, f"{text}.dependencies", install_path))
                     else:
                         errors.append(
                             _error(path, text, "Nested dependencies must be an object.")
                         )
+        declarations = _requesters(inventory)
+        for install_path, name, record, location in locations:
+            requirements.append(
+                _record(name, record, location, declarations.get(install_path, []))
+            )
     else:
         packages = document.get("packages")
         if not isinstance(packages, dict):
             raise ValueError("packages must be an object for lockfileVersion 2/3.")
+        declarations = _requesters(packages)
         # The legacy dependencies tree in v2 is intentionally never inventoried.
         for install_path, record in packages.items():
             text = f"packages[{json.dumps(install_path)}]"
@@ -200,22 +207,41 @@ def _lock(
                 requirements.append(_unscanned(location, _WORKSPACE_REASON))
                 continue
             install_name = match.group(1)
-            parent_path = install_path.rsplit("node_modules/", 1)[0].rstrip("/")
-            parent = packages.get(parent_path, {})
-            aliases = _aliases(parent, install_name) if isinstance(parent, dict) else []
-            requirements.append(_record(install_name, record, location, aliases))
+            requirements.append(
+                _record(
+                    install_name, record, location, declarations.get(install_path, [])
+                )
+            )
     return requirements, errors
 
 
-def _aliases(parent: dict[str, Any], name: str) -> list[str]:
-    aliases = []
-    for group in (*_GROUPS, "requires"):
-        declarations = parent.get(group)
-        if isinstance(declarations, dict):
-            declaration = declarations.get(name)
-            if isinstance(declaration, str) and declaration.startswith("npm:"):
-                aliases.append(declaration)
-    return aliases
+def _requesters(inventory: dict[str, Any]) -> dict[str, list[str]]:
+    """Associate declarations with the nearest recorded install, including hoists.
+
+    This is a lexical inventory join, not range resolution or an active install
+    reconstruction. A nested record shadows its hoisted namesake even if broken.
+    """
+    result: dict[str, list[str]] = {}
+    for requester, record in inventory.items():
+        if not isinstance(record, dict):
+            continue
+        directory = PurePosixPath(requester)
+        ancestors = (directory, *directory.parents)
+        for group in (*_GROUPS, "requires"):
+            declarations = record.get(group)
+            if not isinstance(declarations, dict):
+                continue
+            for name, declaration in declarations.items():
+                if not isinstance(declaration, str):
+                    continue
+                for ancestor in ancestors:
+                    if ancestor.name == "node_modules":
+                        continue
+                    candidate = str(ancestor / "node_modules" / name)
+                    if candidate in inventory:
+                        result.setdefault(candidate, []).append(declaration)
+                        break
+    return result
 
 
 def _registry_name(resolved: str) -> str | None:
@@ -236,7 +262,7 @@ def _record(
     install_name: str,
     record: dict[str, Any],
     source: SourceLocation,
-    aliases: list[str] | None = None,
+    declarations: list[str],
 ) -> RequirementResult:
     if "link" in record and type(record["link"]) is not bool:
         return _unscanned(source, "Invalid link flag.", install_name)
@@ -250,6 +276,23 @@ def _record(
     name = record.get("name", install_name)
     if not isinstance(name, str):
         return _unscanned(source, "Invalid package name field.", install_name)
+    targets = {name} if "name" in record else set()
+    aliases = [value for value in declarations if value.startswith("npm:")]
+    if version.startswith("npm:"):
+        aliases.append(version)
+    for alias in aliases:
+        target, separator, _ = alias[4:].rpartition("@")
+        try:
+            if not separator:
+                raise ValueError("Missing alias version separator")
+            PackageVersion(ecosystem="npm", name=target, version="0.0.0")
+        except ValidationError, ValueError:
+            return _unscanned(
+                source, "Untrustworthy declared alias target.", install_name
+            )
+        targets.add(target)
+    if aliases and any(not value.startswith("npm:") for value in declarations):
+        targets.add(install_name)
     resolved = record.get("resolved")
     registry_name = None
     if "resolved" in record:
@@ -262,11 +305,7 @@ def _record(
         if registry_name is not None:
             # Aliases may differ from their installation path. The explicit name
             # or registry URL supplies the real identity; never query the alias.
-            if "name" in record and name != registry_name:
-                return _unscanned(
-                    source, "Conflicting registry package identities.", install_name
-                )
-            name = registry_name
+            targets.add(registry_name)
         elif ":" in resolved or resolved.startswith(("/", ".")):
             return _unscanned(
                 source,
@@ -274,40 +313,16 @@ def _record(
                 "registry identity is not trustworthy.",
                 install_name,
             )
-        elif not resolved.startswith(f"{name}/-/"):
+    if len(targets) > 1:
+        return _unscanned(
+            source, "Conflicting registry/alias identities.", install_name
+        )
+    if targets:
+        name = targets.pop()
+    if isinstance(resolved, str) and registry_name is None:
+        relative_name, separator, artifact = resolved.partition("/-/")
+        if relative_name != name or not separator or not artifact or "/" in artifact:
             return _unscanned(
                 source, "Unrecognized registry-relative source.", install_name
             )
-    if aliases:
-        targets = set()
-        for alias in aliases:
-            target, separator, _ = alias[4:].rpartition("@")
-            try:
-                if not separator:
-                    raise ValueError("Missing alias version separator")
-                PackageVersion(ecosystem="npm", name=target, version="0.0.0")
-            except ValidationError, ValueError:
-                return _unscanned(
-                    source, "Untrustworthy declared alias target.", install_name
-                )
-            targets.add(target)
-        if len(targets) != 1:
-            return _unscanned(
-                source, "Conflicting declared alias targets.", install_name
-            )
-        target = targets.pop()
-        if ("name" in record or registry_name is not None) and name != target:
-            return _unscanned(
-                source, "Conflicting declared/locked alias identities.", install_name
-            )
-        name = target
-    result = resolve_npm_declaration(name, version, source)
-    if isinstance(result, ReadyRequirement):
-        if (
-            "name" in record or registry_name is not None or aliases
-        ) and result.package.name != name:
-            return _unscanned(
-                source, "Conflicting alias target identities.", install_name
-            )
-    # PackageVersion validation above deliberately rejects local/git/range versions.
-    return result
+    return resolve_npm_declaration(name, version, source)

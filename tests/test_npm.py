@@ -460,3 +460,104 @@ def test_readers_do_not_execute_or_resolve_externally(
     )
     assert identities(read_package_json(manifest)) == [("npm", "real", "1.0.0")]
     assert read_npm_lock(FIXTURES / "upstream-v2.json").status == "success"
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("conflict", [None, "npm:other@^2", "^2"])
+def test_hoisted_alias_requesters_and_nested_isolation(
+    tmp_path: Path, version: int, conflict: str | None
+) -> None:
+    parent = {"version": "1.0.0"}
+    other = {"version": "1.0.0"}
+    if version == 1:
+        records: dict[str, Any] = {
+            "parent": {**parent, "requires": {"alias": "npm:real@^2"}},
+            "alias": {"version": "2.1.0"},
+            "isolated": {
+                "version": "1.0.0",
+                "requires": {"alias": "npm:nested@^3"},
+                "dependencies": {"alias": {"version": "3.1.0"}},
+            },
+        }
+        if conflict is not None:
+            records["other"] = {**other, "requires": {"alias": conflict}}
+        doc = {"lockfileVersion": version, "dependencies": records}
+    else:
+        records = {
+            "": {},
+            "node_modules/parent": {**parent, "dependencies": {"alias": "npm:real@^2"}},
+            "node_modules/alias": {"version": "2.1.0"},
+            "node_modules/isolated": {
+                "version": "1.0.0",
+                "dependencies": {"alias": "npm:nested@^3"},
+            },
+            "node_modules/isolated/node_modules/alias": {"version": "3.1.0"},
+        }
+        if conflict is not None:
+            records["node_modules/other"] = {
+                **other,
+                "dependencies": {"alias": conflict},
+            }
+        doc = {"lockfileVersion": version, "packages": records}
+    result = read_npm_lock(write(tmp_path / "package-lock.json", doc))
+    assert result.status == "success" and not result.errors
+    actual = identities(result)
+    assert ("npm", "nested", "3.1.0") in actual
+    assert not any(name == "alias" for _, name, _ in actual)
+    if conflict is None:
+        assert ("npm", "real", "2.1.0") in actual
+    else:
+        assert not any(ver == "2.1.0" for _, _, ver in actual)
+        assert any(r.status == "unscanned" for r in result.requirements)
+
+
+@pytest.mark.parametrize("use_declaration", [True, False])
+@pytest.mark.parametrize("target", ["real", "@scope/real"])
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_registry_relative_alias_target_reconciled_first(
+    tmp_path: Path, use_declaration: bool, target: str, version: int
+) -> None:
+    doc: dict[str, Any] = {
+        "lockfileVersion": 1,
+        "dependencies": {
+            "alias": {
+                "version": "1.2.3" if use_declaration else f"npm:{target}@1.2.3",
+                "resolved": f"{target}/-/real-1.2.3.tgz",
+            },
+        },
+    }
+    if use_declaration:
+        doc["dependencies"]["parent"] = {
+            "version": "1.0.0",
+            "requires": {"alias": f"npm:{target}@^1"},
+        }
+    if version != 1:
+        records = doc.pop("dependencies")
+        doc["packages"] = {
+            "node_modules/" + name: record for name, record in records.items()
+        }
+        doc["packages"][""] = {}
+        doc["lockfileVersion"] = version
+    result = read_npm_lock(write(tmp_path / "package-lock.json", doc))
+    assert ("npm", target, "1.2.3") in identities(result)
+    assert all(r.status == "ready" for r in result.requirements)
+
+
+@pytest.mark.parametrize(
+    "resolved", ["other/-/other-1.2.3.tgz", "real/-/", "real/-/nested/file.tgz"]
+)
+def test_relative_alias_conflicts_or_bad_artifacts_stay_unscanned(
+    tmp_path: Path, resolved: str
+) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": 1,
+                "dependencies": {
+                    "alias": {"version": "npm:real@1.2.3", "resolved": resolved},
+                },
+            },
+        )
+    )
+    assert not identities(result) and result.requirements[0].status == "unscanned"
