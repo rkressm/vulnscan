@@ -70,6 +70,10 @@ unknown versions, malformed shapes, local/git/workspace and unverifiable tarball
   This is a lexical inventory join, not dependency range/installation resolution.
   Alias version, explicit name, requester and public-registry URL evidence are
   reconciled before validating a registry-relative source against the real target.
+  Ordinary registry requests assert the installation name independently of whether
+  any `npm:` alias request exists; conflicting explicit names/registry URLs also
+  stay unscanned. URL/protocol/path and local archive declarations do not assert
+  a registry name. This syntactic distinction does not parse or resolve ranges.
 - Recognized public tarball URL hosts: `registry.npmjs.org`,
   `registry.yarnpkg.com`; their `/<package>/-/<artifact>` paths identify packages.
   v1 registry-relative `<package>/-/<artifact>` resolutions are also accepted.

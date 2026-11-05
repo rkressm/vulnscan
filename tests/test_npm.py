@@ -561,3 +561,100 @@ def test_relative_alias_conflicts_or_bad_artifacts_stay_unscanned(
         )
     )
     assert not identities(result) and result.requirements[0].status == "unscanned"
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("evidence", ["name", "resolved"])
+@pytest.mark.parametrize("declaration", ["^2", "2.1.0", "latest", "*"])
+def test_ordinary_registry_request_conflicts_with_recovered_target(
+    tmp_path: Path, version: int, evidence: str, declaration: str
+) -> None:
+    record = {
+        "version": "2.1.0",
+        evidence: "real"
+        if evidence == "name"
+        else "https://registry.npmjs.org/real/-/real-2.1.0.tgz",
+    }
+    if version == 1:
+        doc = {
+            "lockfileVersion": version,
+            "dependencies": {
+                "parent": {"version": "1.0.0", "requires": {"alias": declaration}},
+                "alias": record,
+            },
+        }
+    else:
+        doc = {
+            "lockfileVersion": version,
+            "packages": {
+                "": {},
+                "node_modules/parent": {
+                    "version": "1.0.0",
+                    "dependencies": {"alias": declaration},
+                },
+                "node_modules/alias": record,
+            },
+        }
+    result = read_npm_lock(write(tmp_path / "package-lock.json", doc))
+    assert identities(result) == [("npm", "parent", "1.0.0")]
+    assert any(
+        r.status == "unscanned" and "Conflicting" in r.reason
+        for r in result.requirements
+    )
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "npm:real@^2",
+        "https://example.org/archive.tgz",
+        "git+https://example.org/repo",
+        "github:owner/repo",
+        "owner/repo",
+        "file:../local",
+        "../local",
+        "./local",
+        "/local",
+        "~/local",
+        ".",
+        "..",
+        "workspace:*",
+        "link:../local",
+        "local.tgz",
+        "local.tar.gz",
+        "local.tar",
+        "C:\\local\\package.tgz",
+    ],
+)
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_alias_and_non_registry_requests_do_not_assert_install_registry_name(
+    tmp_path: Path, version: int, declaration: str
+) -> None:
+    record = {
+        "version": "2.1.0",
+        "name": "real",
+        "resolved": "https://registry.npmjs.org/real/-/real-2.1.0.tgz",
+    }
+    if version == 1:
+        doc = {
+            "lockfileVersion": version,
+            "dependencies": {
+                "parent": {"version": "1.0.0", "requires": {"alias": declaration}},
+                "alias": record,
+            },
+        }
+    else:
+        doc = {
+            "lockfileVersion": version,
+            "packages": {
+                "": {},
+                "node_modules/parent": {
+                    "version": "1.0.0",
+                    "dependencies": {"alias": declaration},
+                },
+                "node_modules/alias": record,
+            },
+        }
+    result = read_npm_lock(write(tmp_path / "package-lock.json", doc))
+    assert ("npm", "real", "2.1.0") in identities(result)
+    assert all(r.status == "ready" for r in result.requirements)

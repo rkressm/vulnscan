@@ -258,6 +258,16 @@ def _registry_name(resolved: str) -> str | None:
     return package
 
 
+def _ordinary_registry_spec(value: str) -> bool:
+    """Classify plain pins/ranges/tags without validating or resolving ranges."""
+    value = value.strip()
+    return (
+        value not in (".", "..")
+        and not any(delimiter in value for delimiter in (":", "/", "\\"))
+        and not value.endswith((".tgz", ".tar.gz", ".tar"))
+    )
+
+
 def _record(
     install_name: str,
     record: dict[str, Any],
@@ -291,7 +301,9 @@ def _record(
                 source, "Untrustworthy declared alias target.", install_name
             )
         targets.add(target)
-    if aliases and any(not value.startswith("npm:") for value in declarations):
+    # Plain registry requests assert the install name even when another source
+    # (explicit name or tarball URL, not just an npm: alias) suggests a target.
+    if any(_ordinary_registry_spec(value) for value in declarations):
         targets.add(install_name)
     resolved = record.get("resolved")
     registry_name = None
