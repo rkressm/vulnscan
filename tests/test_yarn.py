@@ -312,6 +312,46 @@ def test_modern_body_comments_are_not_format_headers(
     assert identities(result) == [("npm", "foo", "1.2.3")]
 
 
+@pytest.mark.parametrize(
+    "root",
+    [
+        '  version: 0.0.0-use.local\n  resolution: "project@workspace:."\n'
+        '  dependencies:\n    missing: "npm:^1"\n',
+        '  version: 0.0.0-use.local\n  resolution: "project@workspace:."\n'
+        "  dependencies: []\n",
+        '  resolution: "project@workspace:."\n  dependencies: true\n',
+        "  dependencies:\n    missing: {}\n",
+        "  dependencies: null\n",
+    ],
+)
+def test_workspace_root_never_claims_complete_inventory(
+    tmp_path: Path, root: str
+) -> None:
+    result = read_text(
+        tmp_path,
+        modern(
+            f'"project@workspace:.":\n{root}'
+            '"present@npm:1":\n  version: 1.0.0\n'
+            '  resolution: "present@npm:1.0.0"\n'
+        ),
+    )
+    assert result.status == "success"
+    assert identities(result) == [("npm", "present", "1.0.0")]
+    assert isinstance(result.requirements[0], UnscannedRequirement)
+    assert "project@workspace:." in result.requirements[0].source.text
+
+
+@pytest.mark.parametrize("root", ["[]", "null", "true", '"broken"', "{}"])
+def test_malformed_root_container_cannot_be_clean_empty(
+    tmp_path: Path, root: str
+) -> None:
+    result = read_text(tmp_path, modern(f'"project@workspace:.": {root}\n'))
+    assert not identities(result)
+    assert result.errors or any(
+        isinstance(item, UnscannedRequirement) for item in result.requirements
+    )
+
+
 def test_read_failures_track_input(tmp_path: Path) -> None:
     path = tmp_path / "yarn.lock"
     for contents in (None, b"\xff"):
