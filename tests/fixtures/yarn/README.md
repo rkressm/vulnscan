@@ -4,6 +4,8 @@ Accepted identifiers: Classic `# yarn lockfile v1` (mandatory; no metadata),
 or modern integer `__metadata.version` **4, 6, 8, 10**. `cacheKey` is not a
 format identifier. Missing, unknown, boolean, float and quoted versions fail.
 Unknown explicit Classic versions fail, even beside modern metadata.
+Classic markers are recognized only in the leading blank/comment preamble;
+header-like comments in a modern mapping do not change its format.
 
 The following original inert upstream files were re-fetched on 2026-11-06.
 Their SHA-256 values agree with T01's contract. No JavaScript/package-manager
@@ -39,6 +41,10 @@ string syntax, flow mapping, tag or anchor handling. These stricter failure
 policies intentionally avoid ambiguous or silently repaired inventories. Normal
 Classic serialized records are line-oriented. The complete original Classic
 file was parsed successfully during fixture verification (1,355 selectors).
+The cited tokenizer starts bare strings with `[a-zA-Z/.-]`, and parses a leading
+digit as a number: scoped and digit-leading package keys **must be double-quoted**
+in Classic. We reject bare `@scope/name@...` / `123@...`, rather than inventing
+a more permissive dialect; their quoted equivalents are supported.
 
 `wrappers.lock` is **synthetic**, except the patch's package, upstream version and
 encoded npm source derive from T01's verified v4/v6 typedoc patch. Patch paths,
@@ -59,6 +65,14 @@ in the upstream lockfiles above. Grammar authority (pinned modern revision):
 - Modern `resolution` supplies identity, not alias/group selector names. Classic
   aliases supply their target; public npm/Yarn tarball identity must agree when
   present. Custom tarball hosts remain unscanned rather than guessed.
+  Modern aliases are remapped from descriptors to real-target locators by
+  <https://github.com/yarnpkg/berry/blob/8f638c0806ec8f3758adb13d93567fc782f9c903/packages/plugin-npm/sources/NpmRemapResolver.ts>:
+  `supportsLocator` explicitly returns false, while candidates come from the
+  remapped target descriptor. Its sibling `NpmSemverResolver.ts` emits
+  `<real-ident>@npm:<exact-version>`. Thus `alias@npm:real@1.2.3` is **not** a
+  supported resolved locator; it remains unscanned instead of interpreting a
+  malformed resolution as a descriptor. `wrappers.lock` covers the real-target
+  resolution shape while retaining grouped alias descriptor provenance.
 - Npm locator versions must be exact shared-model SemVer and agree with the
   record version. Binding-bearing npm locators are conservatively unscanned.
 - Virtual/patch nesting is bounded to 16 wrappers. Patch source ident must match
@@ -73,5 +87,7 @@ in the upstream lockfiles above. Grammar authority (pinned modern revision):
 - Document IO/syntax/version failures produce a failed source with no packages.
   Bad records in a valid document preserve usable siblings via contextual entry
   errors/unscanned outcomes. Safe YAML rejects duplicate keys and unsafe tags.
+  Loader `TypeError` (including complex unhashable mapping keys) and excessive
+  nesting/recursion become contextual failed reads, never raw tracebacks.
   Malformed and unsupported-version test cases are synthetic inline test inputs;
   the test suite makes no HTTP calls and needs no Node/Yarn installation.

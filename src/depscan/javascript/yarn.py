@@ -21,8 +21,12 @@ from depscan.models import (
 )
 
 
-def _unscanned(source: SourceLocation, reason: str) -> UnscannedRequirement:
-    return UnscannedRequirement(ecosystem="npm", source=source, reason=reason)
+def _unscanned(
+    source: SourceLocation, reason: str, name: str | None = None
+) -> UnscannedRequirement:
+    return UnscannedRequirement(
+        ecosystem="npm", source=source, reason=reason, name=name
+    )
 
 
 def _tokens(line: str) -> list[Any]:
@@ -50,15 +54,12 @@ def _tokens(line: str) -> list[Any]:
             if match is None:
                 raise ValueError("Invalid Classic token.")
             value = match.group()
-            tokens.append(
-                int(value)
-                if value.isdigit()
-                else True
-                if value == "true"
-                else False
-                if value == "false"
-                else value
-            )
+            if value.isdigit():
+                tokens.append(int(value))
+            elif value in ("true", "false"):
+                tokens.append(value == "true")
+            else:
+                tokens.append(value)
             line = line[len(value) :]
     return tokens
 
@@ -131,6 +132,7 @@ def _modern_record(
     if not isinstance(locator, str) or not isinstance(version, str):
         return [_unscanned(source, "Missing or invalid resolution/version field.")]
     patched = False
+    name: str | None = None
     try:
         # One final iteration inspects the npm locator after 16 wrappers.
         for _ in range(17):
@@ -161,27 +163,29 @@ def _modern_record(
                 if reference.startswith(("workspace:", "portal:", "link:"))
                 else "Non-registry or unsupported Yarn resolution."
             )
-            return [_unscanned(source, reason)]
+            return [_unscanned(source, reason, name)]
         result = resolve_npm_declaration(name, reference[4:], source)
         if isinstance(result, ReadyRequirement):
             if exact_npm_version(version) != result.package.version:
                 raise ValueError("Resolution and record version disagree.")
         results: list[RequirementResult] = [result]
-        if patched:
+        if patched and isinstance(result, ReadyRequirement):
             results.append(
                 _unscanned(
                     source,
                     "Upstream-only advisory coverage; applied patch is not assessed.",
+                    name,
                 )
             )
         return results
     except (ValueError, UnicodeError) as exc:
-        return [_unscanned(source, f"Untrustworthy Yarn locator: {exc}")]
+        return [_unscanned(source, f"Untrustworthy Yarn locator: {exc}", name)]
 
 
 def _classic_record(
     selector: str, record: dict[str, Any], source: SourceLocation
 ) -> RequirementResult:
+    name: str | None = None
     try:
         name, request = _split_locator(selector)
         version = record.get("version")
@@ -221,7 +225,7 @@ def _classic_record(
                 raise ValueError("Non-registry or conflicting tarball identity.")
         return resolve_npm_declaration(name, f"npm:{target}@{version}", source)
     except ValueError as exc:
-        return _unscanned(source, str(exc))
+        return _unscanned(source, str(exc), name)
 
 
 def read_yarn_lock(path: Path) -> SourceReadResult:
@@ -231,7 +235,16 @@ def read_yarn_lock(path: Path) -> SourceReadResult:
     location = SourceLocation(path=path, line=1, text=path.name)
     try:
         text = path.read_text(encoding="utf-8-sig")
-        headers = re.findall(r"^\s*#\s*yarn lockfile v([^\s]+)\s*$", text, re.MULTILINE)
+        headers = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not stripped.startswith("#"):
+                break
+            match = re.fullmatch(r"#\s*yarn lockfile v(\S+)", stripped)
+            if match:
+                headers.append(match[1])
         if headers:
             if any(header != "1" for header in headers):
                 raise ValueError("Unsupported Classic lockfile version; expected v1.")
@@ -275,7 +288,14 @@ def read_yarn_lock(path: Path) -> SourceReadResult:
                 requirements.append(_classic_record(selector, record, entry))
             else:
                 requirements.extend(_modern_record(record, entry))
-    except (OSError, UnicodeError, ValueError, YAMLError, RecursionError) as exc:
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TypeError,
+        YAMLError,
+        RecursionError,
+    ) as exc:
         return SourceReadResult(
             source=source,
             status="failed",

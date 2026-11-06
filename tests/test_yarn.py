@@ -100,6 +100,11 @@ def test_wrappers_aliases_and_workspace_coverage() -> None:
         modern("foo: !!python/object:danger {}"),
         modern("foo: {}\nfoo: {}"),
         modern("foo:\n  version: 1\n  version: 2"),
+        modern("? [a, {b: c}]\n: value"),
+        '# yarn lockfile v1\nfoo@1:\n  version "1.0.0"\nfoo@1:\n  version "1.0.0"',
+        'foo@1:\n  version "1.0.0"\n# yarn lockfile v1\n',
+        '# yarn lockfile v1\n@scope/name@^1:\n  version "1.2.3"\n',
+        '# yarn lockfile v1\n123@^1:\n  version "1.2.3"\n',
     ],
 )
 def test_bad_documents_fail(tmp_path: Path, text: str) -> None:
@@ -139,6 +144,12 @@ def test_classic_quotes_comments_crlf_bom_and_nested_maps(tmp_path: Path) -> Non
     assert identities(result) == [("npm", "foo", "1.2.3-beta.1+build")] * 2
 
 
+@pytest.mark.parametrize("name", ["123", "@scope/name"])
+def test_classic_names_requiring_quotes(tmp_path: Path, name: str) -> None:
+    result = read_text(tmp_path, f'# yarn lockfile v1\n"{name}@^1":\n  version "1.2.3"')
+    assert identities(result) == [("npm", name, "1.2.3")]
+
+
 @pytest.mark.parametrize(
     "selector,fields",
     [
@@ -171,6 +182,10 @@ def test_classic_untrustworthy_entries_are_unscanned(
     [
         ("foo@npm:^1.0.0", "1.0.0"),
         ("foo@npm:1.0.0", "2.0.0"),
+        ("alias@npm:real@1.0.0", "1.0.0"),
+        ("alias@npm:@scope/real@1.0.0", "1.0.0"),
+        ("alias@virtual:hash#npm:real@1.0.0", "1.0.0"),
+        ("foo@npm:1.0.0::__archiveUrl=https%3A%2F%2Fexample.com%2Ffoo.tgz", "1.0.0"),
         ("foo@file:../foo", "1.0.0"),
         ("foo@https://example.com/foo.tgz", "1.0.0"),
         ("foo@virtual:#npm:1.0.0", "1.0.0"),
@@ -215,6 +230,88 @@ def test_sixteen_virtual_wrappers_are_supported(tmp_path: Path) -> None:
     assert identities(result) == [("npm", "foo", "1.0.0")]
 
 
+def test_modern_keeps_versions_and_duplicate_identity_provenance(
+    tmp_path: Path,
+) -> None:
+    result = read_text(
+        tmp_path,
+        modern(
+            '"foo@npm:^1":\n  version: 1.0.0\n  resolution: "foo@npm:1.0.0"\n'
+            '"alias@npm:foo@1":\n  version: 1.0.0\n  resolution: "foo@npm:1.0.0"\n'
+            '"foo@npm:^2":\n  version: 2.0.0\n  resolution: "foo@npm:2.0.0"\n'
+        ),
+    )
+    assert identities(result) == [
+        ("npm", "foo", "1.0.0"),
+        ("npm", "foo", "1.0.0"),
+        ("npm", "foo", "2.0.0"),
+    ]
+    assert len({i.source.text for i in result.requirements}) == 3
+
+
+def test_reads_without_package_manager_executables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    for name in ("classic.lock", "modern-8.lock", "wrappers.lock"):
+        result = read_yarn_lock(FIXTURES / name)
+        assert result.status == "success"
+        assert identities(result)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "foo@patch:foo@virtual%3Ahash%23npm%3A1.2.3#patch",
+        "foo@patch:foo@patch%3Afoo@npm%253A1.2.3%23patch#patch",
+    ],
+)
+def test_patch_decodes_only_its_source_once(tmp_path: Path, locator: str) -> None:
+    result = read_text(
+        tmp_path,
+        modern(f'foo:\n  version: 1.2.3\n  resolution: "{locator}"\n'),
+    )
+    assert identities(result) == [("npm", "foo", "1.2.3")]
+    unscanned = [i for i in result.requirements if isinstance(i, UnscannedRequirement)]
+    assert len(unscanned) == 1
+    assert "Upstream-only" in unscanned[0].reason
+
+
+def test_unresolved_patch_has_only_one_coverage_outcome(tmp_path: Path) -> None:
+    result = read_text(
+        tmp_path,
+        modern('foo:\n  version: 1.2.3\n  resolution: "foo@patch:foo@npm%3A%5E1#p"'),
+    )
+    assert len(result.requirements) == 1
+    assert isinstance(result.requirements[0], UnscannedRequirement)
+    assert "Upstream-only" not in result.requirements[0].reason
+
+
+@pytest.mark.parametrize("protocol", ["workspace", "portal", "link"])
+def test_workspace_protocols_have_visible_coverage(
+    tmp_path: Path, protocol: str
+) -> None:
+    result = read_text(
+        tmp_path,
+        modern(f'foo:\n  version: 1.2.3\n  resolution: "foo@{protocol}:../foo"'),
+    )
+    assert not identities(result)
+    assert isinstance(result.requirements[0], UnscannedRequirement)
+    assert result.requirements[0].name == "foo"
+    assert "external workspace coverage" in result.requirements[0].reason
+
+
+@pytest.mark.parametrize("comment", ["# yarn lockfile v1", "  # yarn lockfile v1"])
+def test_modern_body_comments_are_not_format_headers(
+    tmp_path: Path, comment: str
+) -> None:
+    result = read_text(
+        tmp_path,
+        modern(f'foo:\n{comment}\n  version: 1.2.3\n  resolution: "foo@npm:1.2.3"'),
+    )
+    assert identities(result) == [("npm", "foo", "1.2.3")]
+
+
 def test_read_failures_track_input(tmp_path: Path) -> None:
     path = tmp_path / "yarn.lock"
     for contents in (None, b"\xff"):
@@ -232,3 +329,10 @@ def test_recursive_yaml_does_not_recurse_through_entries(tmp_path: Path) -> None
     )
     assert result.status == "success"
     assert not identities(result)
+
+
+def test_excessively_nested_yaml_fails_contextually(tmp_path: Path) -> None:
+    result = read_text(tmp_path, modern("junk: " + "[" * 1200 + "0" + "]" * 1200))
+    assert result.status == "failed"
+    assert result.errors[0].ecosystem == "npm"
+    assert not result.requirements
