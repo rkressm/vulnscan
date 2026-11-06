@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from depscan.models import ReadyRequirement, UnscannedRequirement
+from depscan.models import ReadyRequirement, ScanError, UnscannedRequirement
 from depscan.project import read_project
 
 
@@ -261,3 +261,63 @@ def test_invalid_pipfile_custom_category_is_incomplete(tmp_path: Path) -> None:
     )
 
     assert isinstance(read_project(path)[1][0], UnscannedRequirement)
+
+
+@pytest.mark.parametrize("filename", ["Pipfile.lock", "pyproject.toml"])
+def test_deep_manifest_is_contextual_failure(tmp_path: Path, filename: str) -> None:
+    content = (
+        '{"nested":' + "[" * 2000 + "0" + "]" * 2000 + "}"
+        if filename == "Pipfile.lock"
+        else "nested = " + "[" * 2000 + "0" + "]" * 2000
+    )
+    path = write(tmp_path / filename, content)
+    errors: list[ScanError] = []
+    inputs: set[Path] = set()
+    selected, results = read_project(path, source_errors=errors, input_paths=inputs)
+    assert selected == path
+    assert len(errors) == len(results) == 1
+    assert isinstance(results[0], UnscannedRequirement)
+    assert errors[0].source is not None
+    assert errors[0].source.path == path
+    assert errors[0].reason
+    assert inputs == {path}
+
+
+@pytest.mark.parametrize("project_scan", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_venv_tracks_only_metadata_attempts(
+    tmp_path: Path, project_scan: bool, legacy: bool
+) -> None:
+    venv = tmp_path / "env"
+    venv.mkdir()
+    config = write(venv / "pyvenv.cfg", "")
+    info = venv / "Lib/site-packages/demo-2.0.dist-info"
+    info.mkdir(parents=True)
+    metadata_file = write(
+        info / ("PKG-INFO" if legacy else "METADATA"), "Name: demo\nVersion: 2.0\n"
+    )
+    write(info / "RECORD", "unrelated.py,,\n")
+    path = write(tmp_path / "requirements.txt", "demo>=1")
+    inputs: set[Path] = set()
+    results = read_project(
+        tmp_path if project_scan else path, venv=venv, input_paths=inputs
+    )[1]
+    assert isinstance(results[0], ReadyRequirement)
+    assert results[0].package.version == "2.0"
+    assert inputs == {path, info / "METADATA", metadata_file}
+    assert config not in inputs  # Only statted, never read.
+
+
+def test_project_without_venv_does_not_inspect_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_lookup(name: str) -> None:
+        pytest.fail(f"Unexpected metadata lookup: {name}")
+
+    monkeypatch.setattr("depscan.requirements.metadata.distribution", unexpected_lookup)
+    path = write(tmp_path / "requirements.txt", "demo>=1")
+    inputs: set[Path] = set()
+    assert isinstance(
+        read_project(tmp_path, input_paths=inputs)[1][0], UnscannedRequirement
+    )
+    assert inputs == {path}

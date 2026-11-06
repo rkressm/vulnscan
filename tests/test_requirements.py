@@ -16,6 +16,53 @@ from depscan.models import (
 from depscan.requirements import read_requirements
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_explicit_environment_metadata_is_tracked_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    info = tmp_path / "demo-9.dist-info"
+    info.mkdir()
+    target = tmp_path / "metadata.txt"
+    target.write_text("Name: demo\nVersion: 9\n", encoding="utf-8")
+    metadata_file = info / ("PKG-INFO" if legacy else "METADATA")
+    metadata_file.symlink_to(target)
+    monkeypatch.setattr(
+        metadata, "distribution", lambda name: metadata.PathDistribution(info)
+    )
+    inputs: set[Path] = set()
+    original = Path.read_text
+
+    def checked_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path.parent == info:
+            assert path.absolute() in inputs
+            assert path.resolve() in inputs
+        return original(path, encoding="utf-8")
+
+    monkeypatch.setattr(Path, "read_text", checked_read)
+    path = tmp_path / "requirements.txt"
+    path.write_text("demo>=1", encoding="utf-8")
+    results = read_requirements(path, input_paths=inputs)
+    assert isinstance(results[0], ReadyRequirement)
+    # Keep the replaced metadata.version API authoritative, not preflight Version: 9.
+    assert results[0].package.version == "1.5"
+    assert inputs == {path, info / "METADATA", metadata_file, target}
+
+
+def test_missing_metadata_attempts_are_tracked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info = tmp_path / "demo-1.dist-info"
+    info.mkdir()
+    monkeypatch.setattr(
+        metadata, "distribution", lambda name: metadata.PathDistribution(info)
+    )
+    path = tmp_path / "requirements.txt"
+    path.write_text("demo>=1", encoding="utf-8")
+    inputs: set[Path] = set()
+    assert isinstance(read_requirements(path, input_paths=inputs)[0], ReadyRequirement)
+    assert inputs == {path, info / "METADATA", info / "PKG-INFO", info}
+
+
 @pytest.fixture(autouse=True)
 def installed_versions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never depend on packages installed on the machine running the tests."""

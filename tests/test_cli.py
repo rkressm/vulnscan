@@ -101,6 +101,48 @@ def test_project_export_cannot_overwrite_lockfile(
     offline_osv.assert_not_called()
 
 
+@pytest.mark.parametrize("selected_venv", [False, True])
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink", "input-symlink"])
+def test_json_cannot_overwrite_environment_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_osv: MagicMock,
+    selected_venv: bool,
+    alias: str,
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("demo>=1", encoding="utf-8")
+    venv = tmp_path / "env"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
+    info = venv / "Lib/site-packages/demo-2.dist-info"
+    info.mkdir(parents=True)
+    metadata_file = info / "METADATA"
+    content = "Name: demo\nVersion: 2\n"
+    metadata_file.write_text(content, encoding="utf-8")
+    destination = metadata_file
+    if alias != "direct":
+        destination = tmp_path / "report.json"
+        if alias == "symlink":
+            destination.symlink_to(metadata_file)
+        elif alias == "hardlink":
+            destination.hardlink_to(metadata_file)
+        else:
+            metadata_file.rename(destination)
+            metadata_file.symlink_to(destination)
+    arguments = [str(requirements), "--no-cache", "--json", str(destination)]
+    if selected_venv:
+        arguments.extend(["--venv", str(venv)])
+    else:
+        monkeypatch.setattr(
+            metadata, "distribution", lambda name: metadata.PathDistribution(info)
+        )
+    assert main(arguments) == 2
+    assert metadata_file.read_text(encoding="utf-8") == content
+    assert destination.read_text(encoding="utf-8") == content
+    offline_osv.assert_not_called()
+
+
 def test_project_without_manifest_is_incomplete(
     tmp_path: Path, offline_osv: MagicMock
 ) -> None:

@@ -15,7 +15,11 @@ from depscan.models import (
     SourceLocation,
     UnscannedRequirement,
 )
-from depscan.requirements import read_requirements, resolve_requirement
+from depscan.requirements import (
+    read_requirements,
+    resolve_requirement,
+    track_distribution,
+)
 
 _FILES = (
     "uv.lock",
@@ -50,7 +54,12 @@ def read_project(
     try:
         if input_paths is not None and not selected.is_dir():
             input_paths.add(selected.absolute())
-        installed = _installed_versions(venv) if venv is not None else None
+            input_paths.add(selected.resolve())
+        installed = (
+            _installed_versions(venv, input_paths=input_paths)
+            if venv is not None
+            else None
+        )
         if is_project and installed is None:
             installed = {}
         if selected.is_dir():
@@ -70,7 +79,14 @@ def read_project(
             raise ValueError("Dependency file must contain an object.")
         results = _read_manifest(selected, data, installed or {})
         return selected, results
-    except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RecursionError,
+    ) as exc:
         if source_errors is not None:
             source_errors.append(
                 ScanError(ecosystem="PyPI", source=source, reason=str(exc))
@@ -80,7 +96,9 @@ def read_project(
         ]
 
 
-def _installed_versions(venv: Path) -> dict[str, str]:
+def _installed_versions(
+    venv: Path, *, input_paths: set[Path] | None = None
+) -> dict[str, str]:
     if not (venv / "pyvenv.cfg").is_file():
         raise ValueError(f"Not a virtual environment: {venv}")
     paths = sorted(set(venv.glob("lib/python*/site-packages")))
@@ -91,6 +109,7 @@ def _installed_versions(venv: Path) -> dict[str, str]:
         raise ValueError(f"No site-packages directory found in {venv}.")
     versions: dict[str, str] = {}
     for distribution in metadata.distributions(path=[str(path) for path in paths]):
+        distribution = track_distribution(distribution, input_paths)
         name = canonicalize_name(distribution.metadata["Name"])
         if name in versions and versions[name] != distribution.version:
             raise ValueError(f"Conflicting installed versions for {name} in {venv}.")

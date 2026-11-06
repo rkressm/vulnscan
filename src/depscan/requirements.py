@@ -4,6 +4,7 @@ import re
 import shlex
 from collections.abc import Mapping
 from importlib import metadata
+from os import PathLike
 from pathlib import Path
 
 from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
@@ -23,6 +24,33 @@ from depscan.models import (
 
 # Bound recursive expansion as well as checking for actual cycles.
 _MAX_INCLUDE_DEPTH = 100
+
+
+class _TrackedDistribution(metadata.PathDistribution):
+    """Register metadata paths before importlib attempts to open them."""
+
+    def __init__(self, path: Path, input_paths: set[Path]) -> None:
+        super().__init__(path)
+        self.metadata_path = path
+        self.input_paths = input_paths
+
+    def read_text(self, filename: str | PathLike[str]) -> str | None:
+        path = self.metadata_path / filename
+        self.input_paths.add(path.absolute())
+        self.input_paths.add(path.resolve())
+        return super().read_text(filename)
+
+
+def track_distribution(
+    distribution: metadata.Distribution, input_paths: set[Path] | None
+) -> metadata.Distribution:
+    """Track filesystem metadata only, never distribution modules or RECORD files."""
+    # importlib exposes no public metadata-root accessor. Non-filesystem providers
+    # (such as zip archives) cannot be overwritten through an internal file path.
+    path = getattr(distribution, "_path", None)
+    if input_paths is not None and isinstance(path, Path):
+        return _TrackedDistribution(path, input_paths)
+    return distribution
 
 
 def read_requirements(
@@ -124,7 +152,12 @@ def _read_file(
             )
         else:
             results.append(
-                resolve_requirement(text, source, installed_versions=installed_versions)
+                resolve_requirement(
+                    text,
+                    source,
+                    installed_versions=installed_versions,
+                    input_paths=input_paths,
+                )
             )
     return results
 
@@ -166,6 +199,7 @@ def resolve_requirement(
     source: SourceLocation,
     *,
     installed_versions: Mapping[str, str] | None = None,
+    input_paths: set[Path] | None = None,
 ) -> RequirementResult:
     """Resolve a declaration, optionally using an explicitly selected environment."""
     try:
@@ -214,6 +248,15 @@ def resolve_requirement(
         selected_version = pinned_versions[0]
     else:
         try:
+            if installed_versions is None and input_paths is not None:
+                try:
+                    distribution = metadata.distribution(requirement.name)
+                except metadata.PackageNotFoundError:
+                    pass
+                else:
+                    # Preflight the same metadata reads before the legacy version
+                    # API, retaining compatibility with callers that replace it.
+                    _ = track_distribution(distribution, input_paths).metadata
             selected_version = (
                 metadata.version(requirement.name)
                 if installed_versions is None
@@ -228,6 +271,13 @@ def resolve_requirement(
                     "an installed version in the selected Python environment. "
                     "For project scans, select one with --venv PATH."
                 ),
+                name=name,
+            )
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            return UnscannedRequirement(
+                ecosystem="PyPI",
+                source=source,
+                reason=f"Cannot read installed metadata for {name}: {exc}",
                 name=name,
             )
 
