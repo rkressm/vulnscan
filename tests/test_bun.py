@@ -182,8 +182,144 @@ def test_missing_inventory_and_workspace_coverage(tmp_path: Path) -> None:
     )
     assert result.status == "success"
     assert not _ready(result)
-    assert len(result.requirements) == 2
+    assert len(result.requirements) == 1
+    assert result.requirements[0].status == "unscanned"
+    assert result.requirements[0].name == "a"
     assert result.input_paths == (tmp_path / "bun.lock",)
+
+
+def test_partial_root_inventory_reports_missing_declaration(tmp_path: Path) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={"": {"dependencies": {"missing": "1.2.3", "acorn": "5.7.1"}}},
+        packages={"acorn": ["acorn@5.7.1", "", {}, "sha512-test"]},
+    )
+    assert [item.package.name for item in _ready(result)] == ["acorn"]
+    missing = [item for item in result.requirements if item.status == "unscanned"]
+    assert len(missing) == 1
+    assert missing[0].name == "missing"
+    assert "missing" in missing[0].source.text
+    assert result.status == "success"
+    assert not result.errors
+    assert missing[0].ecosystem == "npm"
+    assert missing[0].source.path == tmp_path / "bun.lock"
+    assert missing[0].source.line == 1
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "1.2.3",
+        "^1",
+        "latest",
+        "github:owner/repo",
+        "https://example.test/pkg.tgz",
+        "file:../local",
+        "link:../linked",
+        "workspace:*",
+        "npm:@scope/real@^1",
+    ],
+)
+@pytest.mark.parametrize(
+    "group",
+    ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"],
+)
+def test_absent_root_declarations_are_visible_without_resolving(
+    tmp_path: Path, declaration: str, group: str
+) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={"": {group: {"missing": declaration}}},
+        packages={"acorn": ["acorn@5.7.1", "", {}, ""]},
+    )
+    assert len(_ready(result)) == 1
+    missing = [item for item in result.requirements if item.status == "unscanned"]
+    assert len(missing) == 1
+    assert missing[0].name == "missing"
+    assert group in missing[0].source.text
+    assert declaration in missing[0].source.text
+
+
+def test_root_alias_coverage_uses_install_key_not_resolved_target(
+    tmp_path: Path,
+) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={
+            "": {
+                "dependencies": {
+                    "@scope/alias": "npm:@other/real@^1",
+                    "@other/real": "^1",
+                }
+            }
+        },
+        packages={"@scope/alias": ["@other/real@1.2.3", "", {}, ""]},
+    )
+    assert [item.package.identity for item in _ready(result)] == [
+        ("npm", "@other/real", "1.2.3")
+    ]
+    missing = [item for item in result.requirements if item.status == "unscanned"]
+    assert [item.name for item in missing] == ["@other/real"]
+
+
+def test_nested_install_does_not_cover_root_declaration(tmp_path: Path) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={"": {"dependencies": {"missing": "1.2.3"}}},
+        packages={"parent/missing": ["missing@1.2.3", "", {}, ""]},
+    )
+    assert len(_ready(result)) == 1
+    missing = [item for item in result.requirements if item.status == "unscanned"]
+    assert [item.name for item in missing] == ["missing"]
+
+
+@pytest.mark.parametrize(
+    "record", [None, ["a@file:../local", {}], ["a@^1", "", {}, ""]]
+)
+def test_present_unusable_root_tuple_keeps_existing_diagnostic(
+    tmp_path: Path, record: Any
+) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={"": {"dependencies": {"a": "^1"}}},
+        packages={"a": record},
+    )
+    assert not _ready(result)
+    assert len(result.errors) + len(result.requirements) == 1
+
+
+def test_workspace_coverage_gap_remains_visible_with_hoisted_inventory(
+    tmp_path: Path,
+) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={
+            "": {"dependencies": {"alias": "npm:acorn@^5"}},
+            "packages/member": {
+                "name": "member",
+                "dependencies": {"acorn": "^5", "missing": "github:owner/repo"},
+            },
+        },
+        packages={"alias": ["acorn@5.7.1", "", {}, ""]},
+    )
+    assert len(_ready(result)) == 1
+    missing = [item for item in result.requirements if item.status == "unscanned"]
+    assert [item.name for item in missing] == ["member"]
+    assert "external workspace" in missing[0].reason
+    assert result.input_paths == (tmp_path / "bun.lock",)
+
+
+@pytest.mark.parametrize("packages", [None, {}])
+def test_root_declarations_without_any_inventory(tmp_path: Path, packages: Any) -> None:
+    result = _read(
+        tmp_path,
+        workspaces={"": {"dependencies": {"missing": "1.2.3"}}},
+        **({} if packages is None else {"packages": packages}),
+    )
+    assert not _ready(result)
+    assert len(result.requirements) == 1
+    assert result.requirements[0].status == "unscanned"
+    assert result.requirements[0].name == "missing"
 
 
 def test_untrustworthy_patch_target_remains_visible(tmp_path: Path) -> None:
