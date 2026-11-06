@@ -1,5 +1,9 @@
 # v2 implementation contract (T01 → T02)
 
+> Historical preparation and interface record. References below to unimplemented
+> readers or future tasks describe the T01/T02 checkpoint, not current support.
+> See `README.md` for the supported formats and current limitations.
+
 This is a preparation contract, not a claim that JavaScript readers exist yet.
 T02 implements and tests the types below before the parallel wave. Subsequent
 interface changes require the coordinator's decision. `plan-v2.md` sections 1–4
