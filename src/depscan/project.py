@@ -1,4 +1,4 @@
-"""Detect Python manifests and read locked versions without resolving or installing."""
+"""Discover and read dependency sources without resolving or installing packages."""
 
 import json
 import tomllib
@@ -9,10 +9,17 @@ from typing import Any
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
+from depscan.discovery import discover_sources
+from depscan.javascript.bun import read_bun_lock
+from depscan.javascript.npm import read_npm_lock, read_package_json
+from depscan.javascript.pnpm import read_pnpm_lock
+from depscan.javascript.yarn import read_yarn_lock
 from depscan.models import (
+    DiscoveryResult,
     RequirementResult,
     ScanError,
     SourceLocation,
+    SourceReadResult,
     UnscannedRequirement,
 )
 from depscan.requirements import (
@@ -29,6 +36,50 @@ _FILES = (
     "pyproject.toml",
     "requirements.txt",
 )
+
+
+def read_sources(
+    path: Path, *, venv: Path | None = None
+) -> tuple[DiscoveryResult, tuple[SourceReadResult, ...]]:
+    """Read selected roots independently, preserving discovery and input evidence."""
+    discovery = discover_sources(path)
+    reads: list[SourceReadResult] = []
+    for selection in discovery.selections:
+        source = selection.source
+        if source is None:
+            continue
+        if source.ecosystem == "PyPI":
+            inputs: set[Path] = {source.path}
+            errors: list[ScanError] = []
+            requirements = _read_python(
+                source.path,
+                is_project=path.is_dir(),
+                venv=venv,
+                input_paths=inputs,
+                source_errors=errors,
+            )
+            result = SourceReadResult(
+                source=source,
+                status="failed" if errors else "success",
+                requirements=() if errors else tuple(requirements),
+                errors=tuple(errors),
+                input_paths=tuple(sorted(inputs)),
+            )
+        elif source.kind == "package_json":
+            result = read_package_json(source.path)
+        elif source.kind == "npm":
+            result = read_npm_lock(source.path)
+        elif source.kind == "yarn":
+            result = read_yarn_lock(source.path)
+        elif source.kind == "pnpm":
+            result = read_pnpm_lock(source.path)
+        elif source.kind in {"bun", "bun_binary"}:
+            # Both Bun text and detection-only binary inputs use the Bun reader.
+            result = read_bun_lock(source.path)
+        else:
+            raise ValueError(f"Unsupported dependency source kind: {source.kind}")
+        reads.append(result)
+    return discovery, tuple(reads)
 
 
 def read_project(
@@ -51,6 +102,23 @@ def read_project(
         if is_project
         else path
     )
+    return selected, _read_python(
+        selected,
+        is_project=is_project,
+        venv=venv,
+        input_paths=input_paths,
+        source_errors=source_errors,
+    )
+
+
+def _read_python(
+    selected: Path,
+    *,
+    is_project: bool,
+    venv: Path | None,
+    input_paths: set[Path] | None,
+    source_errors: list[ScanError] | None,
+) -> list[RequirementResult]:
     source = SourceLocation(path=selected.absolute(), line=1, text="")
     try:
         if input_paths is not None and not selected.is_dir():
@@ -64,9 +132,11 @@ def read_project(
         if is_project and installed is None:
             installed = {}
         if selected.is_dir():
-            raise ValueError(f"No supported Python dependency file found in {path}.")
+            raise ValueError(
+                f"No supported Python dependency file found in {selected}."
+            )
         if selected.name not in _FILES or selected.name == "requirements.txt":
-            return selected, read_requirements(
+            return read_requirements(
                 selected,
                 installed_versions=installed,
                 input_paths=input_paths,
@@ -79,7 +149,7 @@ def read_project(
         if not isinstance(data, dict):
             raise ValueError("Dependency file must contain an object.")
         results = _read_manifest(selected, data, installed or {})
-        return selected, results
+        return results
     except (
         OSError,
         UnicodeError,
@@ -87,14 +157,13 @@ def read_project(
         TypeError,
         KeyError,
         RecursionError,
+        RuntimeError,
     ) as exc:
         if source_errors is not None:
             source_errors.append(
                 ScanError(ecosystem="PyPI", source=source, reason=str(exc))
             )
-        return selected, [
-            UnscannedRequirement(ecosystem="PyPI", source=source, reason=str(exc))
-        ]
+        return [UnscannedRequirement(ecosystem="PyPI", source=source, reason=str(exc))]
 
 
 def _installed_versions(
