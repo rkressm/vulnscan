@@ -1,7 +1,7 @@
 [project]
 name = "depscan"
 version = "0.1.0"
-description = "Scan declared Python dependencies for known vulnerabilities using OSV."
+description = "Scan declared Python and JavaScript dependencies for known vulnerabilities using OSV."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
