@@ -195,6 +195,11 @@ def _inventory(
         raise ValueError("snapshots are not part of lockfileVersion 6.0.")
     requirements: list[RequirementResult] = []
     errors: list[ScanError] = []
+    patched_identities = set()
+    for key in patches:
+        locator = _locator(key)
+        if locator is not None:
+            patched_identities.add((locator[0], locator[1]))
     # Index the complete inventory before references, including failed records so
     # a broken peer variant cannot silently fall back to a good namesake.
     indexed: dict[tuple[str, str], list[tuple[RequirementResult, bool]]] = {}
@@ -218,13 +223,22 @@ def _inventory(
             result, patched = _package(key, record, source, v6)
         if locator:
             name, version, _ = locator
-            patched |= f"{name}@{version}" in patches
+            patched |= (name, version) in patched_identities
             indexed.setdefault((name, version), []).append((result, patched))
         emit(result, patched)
 
     def reference(
-        name: str, value: str, source: SourceLocation, specifier: str | None = None
+        name: str,
+        value: str,
+        source: SourceLocation,
+        specifier: str | None = None,
+        *,
+        force_patch: bool = False,
     ) -> None:
+        declared_name = resolve_npm_declaration(name, "0.0.0", source)
+        if not isinstance(declared_name, ReadyRequirement):
+            emit(declared_name)
+            return
         raw = value.removeprefix("/").removeprefix("npm:")
         # Aliases serialize their real target in the resolved reference, while
         # ordinary dependency references contain just the resolved version.
@@ -272,7 +286,7 @@ def _inventory(
             return
         emit(
             resolve_npm_declaration(target, version, source),
-            patched or any(flag for _, flag in matches),
+            patched or force_patch or any(flag for _, flag in matches),
         )
 
     def dependencies(record: dict[str, Any], prefix: str, *, importer: bool) -> None:
@@ -332,12 +346,9 @@ def _inventory(
             elif "patched" in record and type(record["patched"]) is not bool:
                 error(source, "Malformed patched flag.")
             else:
-                before = len(requirements)
-                reference(locator[0], key, source)
-                if record.get("patched") is True and isinstance(
-                    requirements[before], ReadyRequirement
-                ):
-                    emit(_unscanned(source, _PATCH))
+                reference(
+                    locator[0], key, source, force_patch=record.get("patched") is True
+                )
         dependencies(record, prefix, importer=False)
     for key, patch in patches.items():
         source = _location(path, f"patchedDependencies[{key!r}]")

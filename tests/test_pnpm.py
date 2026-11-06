@@ -82,6 +82,11 @@ def test_aliases_peers_patches_workspaces_and_nonregistry_inventory() -> None:
     unscanned = [
         item for item in result.requirements if isinstance(item, UnscannedRequirement)
     ]
+    patch_locations = [
+        item.source for item in unscanned if "applied patch" in item.reason
+    ]
+    assert len(patch_locations) == 3
+    assert len(set(item.text for item in patch_locations)) == 3
     assert all(item.ecosystem == "npm" for item in unscanned)
     assert any("workspace" in item.reason.lower() for item in unscanned)
     assert any("tarball" in item.reason for item in unscanned)
@@ -304,6 +309,7 @@ snapshots:
         ("alias", "npm:real@^1", "1.0.0"),
         ("real", "file:../real", "1.0.0"),
         ("alias", "^1", "real@1.0.0"),
+        ("bad/name", "npm:real@^1", "real@1.0.0"),
     ],
 )
 def test_conflicting_importer_targets_are_not_queried_as_aliases(
@@ -337,3 +343,73 @@ packages:
     )
     assert not result.errors
     assert identities(result) == {("npm", "on", "1.0.0"), ("npm", "off", "1.0.0")}
+
+
+def test_v6_peer_variants_patch_and_multiple_versions(tmp_path: Path) -> None:
+    result = read_text(
+        tmp_path,
+        """
+lockfileVersion: '6.0'
+name: root-project
+version: 9.9.9
+packages:
+  /a_b.foo@1.0.0(peer@2.0.0):
+    resolution: {integrity: synthetic}
+    optional: true
+  /a_b.foo@1.0.0(peer@3.0.0):
+    resolution: {integrity: synthetic}
+    dev: true
+  /a_b.foo@2.0.0(patch_hash=abcd):
+    resolution: {integrity: synthetic}
+    patched: true
+""",
+    )
+    assert not result.errors
+    assert identities(result) == {
+        ("npm", "a_b.foo", "1.0.0"),
+        ("npm", "a_b.foo", "2.0.0"),
+    }
+    ready = [item for item in result.requirements if isinstance(item, ReadyRequirement)]
+    assert len(ready) == 3
+    assert len({item.source.text for item in ready}) == 3
+    assert isinstance(result.requirements[-1], UnscannedRequirement)
+    assert "patch" in result.requirements[-1].reason
+
+
+@pytest.mark.parametrize("selector", ["foo@v1.0.0", "foo@1.0.0(peer@2.0.0)"])
+def test_patch_selectors_join_by_canonical_upstream_identity(
+    tmp_path: Path, selector: str
+) -> None:
+    result = read_text(
+        tmp_path,
+        f"""
+lockfileVersion: '9.0'
+patchedDependencies:
+  {selector}: {{path: patches/foo.patch, hash: abcd}}
+packages:
+  foo@1.0.0: {{resolution: {{integrity: synthetic}}}}
+""",
+    )
+    assert not result.errors
+    assert identities(result) == {("npm", "foo", "1.0.0")}
+    assert len(result.requirements) == 2
+    assert isinstance(result.requirements[-1], UnscannedRequirement)
+    assert "applied patch" in result.requirements[-1].reason
+
+
+def test_snapshot_patch_flag_without_other_patch_markers(tmp_path: Path) -> None:
+    result = read_text(
+        tmp_path,
+        """
+lockfileVersion: '9.0'
+packages:
+  foo@1.0.0: {resolution: {integrity: synthetic}}
+snapshots:
+  foo@1.0.0: {patched: true}
+""",
+    )
+    assert not result.errors
+    assert identities(result) == {("npm", "foo", "1.0.0")}
+    assert len(result.requirements) == 3
+    assert isinstance(result.requirements[-1], UnscannedRequirement)
+    assert "applied patch" in result.requirements[-1].reason

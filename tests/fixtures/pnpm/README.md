@@ -54,3 +54,10 @@ records remain usable, but nested manifests are never opened and incomplete
 workspace coverage is explicit. A valid version-only/empty inventory succeeds;
 invalid document/container shapes fail, while malformed entries preserve siblings
 with npm-contextual errors. No network resolution or active-install reconstruction.
+
+Additional inert upstream-file smoke checks during T10 read both full files above
+successfully with zero entry errors (no package-manager execution). Their workspace
+and git entries remain visibly unscanned. Catalog declarations are conservatively
+unscanned at importer locations; the separately recorded registry inventory is
+still queryable. Unversioned patch selectors are not inferred; explicit snapshot
+patch markers still produce the upstream-only coverage diagnostic.
