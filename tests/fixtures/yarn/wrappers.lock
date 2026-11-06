@@ -1,0 +1,22 @@
+__metadata:
+  version: 8
+
+"alias@npm:@scope/real@^1.0.0, @scope/real@npm:^1.0.0":
+  version: 1.2.3
+  resolution: "@scope/real@npm:1.2.3"
+
+"virtual-example@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "virtual-example@virtual:abcdef#npm:2.0.0"
+
+"@strictsoftware/typedoc-plugin-monorepo@patch:example":
+  version: 0.2.2
+  resolution: "@strictsoftware/typedoc-plugin-monorepo@patch:@strictsoftware/typedoc-plugin-monorepo@npm%3A0.2.2#./.patches/example.patch::version=0.2.2&hash=3cb6af&locator=%40yarnpkg%2Fgatsby%40workspace%3Apackages%2Fgatsby"
+
+"nested@npm:^1.0.0":
+  version: 1.0.0
+  resolution: "nested@virtual:abcdef#patch:nested@npm%3A1.0.0#builtin<compat/nested>::version=1.0.0&hash=abcdef"
+
+"project@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "project@workspace:."
