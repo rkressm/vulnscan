@@ -63,13 +63,13 @@ def main(argv: list[str] | None = None) -> int:
         summaries: list[SourceSummary] = []
         read_by_ecosystem = {read.source.ecosystem: read for read in reads}
         for selection in discovery.selections:
-            read = read_by_ecosystem.get(selection.ecosystem)
             status: Literal["success", "failed", "absent", "ambiguous"]
-            if read is None:
-                assert selection.status != "selected"
-                status = selection.status
-            else:
+            if selection.status == "selected":
+                read = read_by_ecosystem[selection.ecosystem]
                 status = read.status
+            else:
+                read = None
+                status = selection.status
             summaries.append(
                 SourceSummary(
                     ecosystem=selection.ecosystem,
@@ -102,8 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(
                 ScanError(
                     reason=(
-                        "No supported dependency sources found in "
-                        f"{args.requirements}."
+                        f"No supported dependency sources found in {args.requirements}."
                     )
                 )
             )
@@ -183,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         report = ScanReport(
             scanned_at=scanned_at,
             results=tuple(results),
+            # Readers may expose the same diagnostic as both an entry error and
+            # an unscanned declaration. Keep declarations, report each error once.
             errors=tuple(dict.fromkeys(errors)),
             detected_ecosystems=detected,
             sources=tuple(summaries),

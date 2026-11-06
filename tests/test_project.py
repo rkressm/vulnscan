@@ -440,3 +440,27 @@ def test_read_sources_root_and_include_failures_are_distinct(tmp_path: Path) -> 
     assert result.status == "failed"
     assert result.requirements == ()
     assert len(result.errors) == 1
+
+
+def test_python_discovery_failure_does_not_hide_javascript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unreadable = write(tmp_path / "uv.lock", "package=[]")
+    write(tmp_path / "package.json", "{}")
+    original = Path.lstat
+
+    def denied(path: Path) -> object:
+        if path == unreadable:
+            raise PermissionError("Python candidate inaccessible")
+        return original(path)
+
+    monkeypatch.setattr(Path, "lstat", denied)
+    discovery, reads = read_sources(tmp_path)
+    python = discovery.selections[0]
+    assert python.status == "failed"
+    assert python.source is None
+    assert python.candidates[0].path == unreadable
+    assert python.errors[0].ecosystem == "PyPI"
+    assert len(reads) == 1
+    assert reads[0].source.ecosystem == "npm"
+    assert reads[0].status == "success"

@@ -73,9 +73,11 @@ def read_sources(
             result = read_yarn_lock(source.path)
         elif source.kind == "pnpm":
             result = read_pnpm_lock(source.path)
-        else:
+        elif source.kind in {"bun", "bun_binary"}:
             # Both Bun text and detection-only binary inputs use the Bun reader.
             result = read_bun_lock(source.path)
+        else:
+            raise ValueError(f"Unsupported dependency source kind: {source.kind}")
         reads.append(result)
     return discovery, tuple(reads)
 

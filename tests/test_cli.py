@@ -33,7 +33,10 @@ def test_help(
         main()
 
     assert exc.value.code == 0
-    assert "usage: depscan" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "usage: depscan" in output
+    assert "Python and JavaScript" in output
+    assert "read Python installed versions" in output
 
 
 def test_version(
@@ -657,7 +660,18 @@ def test_empty_js_sources_are_detected(
     path = tmp_path / filename
     path.write_text(content, encoding="utf-8")
     destination = tmp_path / "report.json"
-    assert main([str(path if explicit else tmp_path), "--json", str(destination)]) == 0
+    assert (
+        main(
+            [
+                str(path if explicit else tmp_path),
+                "--json",
+                str(destination),
+                "--venv",
+                str(tmp_path / "invalid-env"),
+            ]
+        )
+        == 0
+    )
     captured = capsys.readouterr()
     assert str(path) in captured.err
     assert "npm" in captured.err
@@ -752,3 +766,23 @@ def test_output_comparison_errors_block_before_lookups(
     assert main([str(source), "--json", str(destination)]) == 2
     assert destination.read_text(encoding="utf-8") == "preserve"
     offline_osv.assert_not_called()
+
+
+def test_output_protection_resolves_every_input_after_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from depscan.cli import _overwrites_input
+
+    first, second = tmp_path / "a.txt", tmp_path / "z.txt"
+    first.write_text("", encoding="utf-8")
+    second.write_text("", encoding="utf-8")
+    original = Path.resolve
+    resolved: list[Path] = []
+
+    def track(path: Path) -> Path:
+        resolved.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "resolve", track)
+    assert _overwrites_input(first, {first, second})
+    assert resolved == [first, second]
