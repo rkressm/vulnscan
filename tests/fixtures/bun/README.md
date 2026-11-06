@@ -52,7 +52,17 @@ malformed documents and tuples; these are not claimed to be Bun-generated files.
   at the same location. Patch files are never opened or assessed. Non-registry,
   invalid or ambiguous locators are unscanned, never guessed.
 - A valid empty root workspace with absent/empty `packages` is successful;
-  declarations without any inventory yield missing-coverage diagnostics.
+  each root declaration in the four dependency groups without a recorded tuple at
+  its declared install key yields an unscanned coverage diagnostic, even when
+  other tuples exist. This includes non-registry declarations and aliases. A
+  resolved target name or nested install key does not stand in for a missing root
+  install key. Existing malformed/non-registry tuples retain their own errors or
+  unscanned outcomes. Only tuple locators provide ready identities, never missing
+  declarations, ranges or tags.
+- This root presence check is not graph reconstruction, range/version matching,
+  or proof of complete transitive/workspace coverage. Non-root workspace metadata
+  retains its workspace coverage diagnostic, even with hoisted registry inventory;
+  nested manifests are not read and workspace declaration graphs are not resolved.
 - IO/decode/syntax/overall-shape/version failures are failed sources with no
   requirements. Malformed tuples yield contextual entry errors, preserving usable
   siblings. All source locations use document line 1 and every input is registered

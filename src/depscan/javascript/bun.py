@@ -181,16 +181,26 @@ def _inventory(
                     package.name,
                 )
             )
-    if not packages and any(
-        workspace.get(group) for workspace in workspaces.values() for group in _GROUPS
-    ):
-        requirements.append(
-            _unscanned(
-                _location(path, "packages"),
-                "Dependency declarations exist without recorded package inventory; "
-                "exact registry dependency coverage is unavailable.",
+    # Root declarations resolve at their declared install keys, including aliases.
+    # Existing broken/non-registry tuples already have entry diagnostics above.
+    # This presence check neither resolves ranges nor reconstructs workspace or
+    # transitive dependency graphs; non-root workspaces retain their coverage gap.
+    for group in _GROUPS:
+        for name, declaration in workspaces[""].get(group, {}).items():
+            if name in packages:
+                continue
+            requirements.append(
+                _unscanned(
+                    _location(
+                        path,
+                        f'workspaces[""].{group}[{json.dumps(name)}] = {declaration}',
+                    ),
+                    "Root dependency declaration has no recorded package tuple at "
+                    "its install key; dependency coverage is unavailable. "
+                    "No version is inferred from the declaration.",
+                    name,
+                )
             )
-        )
     return requirements, errors
 
 
