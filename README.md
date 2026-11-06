@@ -255,6 +255,20 @@ uv run mypy
 Normal tests are offline and mock HTTP responses. GitHub Actions runs the same
 checks on pushes and pull requests using the locked dependencies.
 
+### Python and JavaScript validation
+
+The completed v2 implementation was independently reviewed and validated with:
+
+- **1,462 offline tests**, passing from source and against the installed wheel.
+- Ruff lint/format checks, mypy, package builds, and GitHub Actions checks.
+- A separate installed-wheel smoke harness covering 17 format/file cases,
+  help/version, mixed-scan exit codes, and empty/unsupported sources, with real
+  network access and package-manager execution blocked.
+
+See the [validation record](docs/v2-validation.md) for the tested checkpoint,
+commands, artifact checks, and remaining coverage boundaries. This is a validation
+checkpoint, not a guarantee that scanned dependencies are vulnerability-free.
+
 ### Architecture
 
 In `src/depscan/`, `cli.py` orchestrates scanning and exit codes;
