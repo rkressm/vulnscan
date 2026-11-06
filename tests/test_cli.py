@@ -1,6 +1,7 @@
 """Offline CLI integration tests, including output and exit codes."""
 
 import json
+import zipfile
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
@@ -140,6 +141,22 @@ def test_json_cannot_overwrite_environment_metadata(
     assert main(arguments) == 2
     assert metadata_file.read_text(encoding="utf-8") == content
     assert destination.read_text(encoding="utf-8") == content
+    offline_osv.assert_not_called()
+
+
+def test_json_cannot_overwrite_unmatched_metadata_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline_osv: MagicMock
+) -> None:
+    archive = tmp_path / "environment.zip"
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr("other-1.dist-info/METADATA", "Name: other\nVersion: 1\n")
+        stream.writestr("unrelated.py", "raise RuntimeError('must not execute')")
+    original = archive.read_bytes()
+    monkeypatch.syspath_prepend(str(archive))
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("missing-archive-safety-package>=1", encoding="utf-8")
+    assert main([str(requirements), "--no-cache", "--json", str(archive)]) == 2
+    assert archive.read_bytes() == original
     offline_osv.assert_not_called()
 
 

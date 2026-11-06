@@ -2,6 +2,7 @@
 
 import re
 import shlex
+import sys
 import zipfile
 from collections.abc import Mapping
 from importlib import metadata
@@ -69,6 +70,17 @@ def track_distribution(
             distribution, Path(path.root.filename), input_paths, archive=True
         )
     return distribution
+
+
+def _track_metadata_archive_candidates(input_paths: set[Path]) -> None:
+    # importlib searches these roots as ZIPs when directory enumeration fails,
+    # even when no matching distribution exists. Register before discovery opens
+    # them. Do not enumerate modules, package contents, or ordinary directories.
+    for entry in sys.path:
+        path = Path(entry)
+        if not path.is_dir():
+            input_paths.add(path.absolute())
+            input_paths.add(path.resolve())
 
 
 def read_requirements(
@@ -267,6 +279,7 @@ def resolve_requirement(
     else:
         try:
             if installed_versions is None and input_paths is not None:
+                _track_metadata_archive_candidates(input_paths)
                 try:
                     distribution = metadata.distribution(requirement.name)
                 except metadata.PackageNotFoundError:

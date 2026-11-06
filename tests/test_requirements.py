@@ -1,8 +1,10 @@
 """Offline tests for declarations, version selection, and file traversal."""
 
+import sys
 import zipfile
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import pytest
 from packaging.markers import default_environment
@@ -17,6 +19,36 @@ from depscan.models import (
 from depscan.requirements import read_requirements
 
 
+def test_unmatched_archive_discovery_is_tracked_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "environment.zip"
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr("other-1.dist-info/METADATA", "Name: other\nVersion: 1\n")
+    monkeypatch.syspath_prepend(str(archive))
+    inputs: set[Path] = set()
+    original_init = zipfile.ZipFile.__init__
+    opened = False
+
+    def checked_init(
+        self: zipfile.ZipFile, file: Any, *args: Any, **kwargs: Any
+    ) -> None:
+        nonlocal opened
+        if file == str(archive):
+            assert archive in inputs
+            opened = True
+        original_init(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", checked_init)
+    path = tmp_path / "requirements.txt"
+    path.write_text("missing-archive-safety-package>=1", encoding="utf-8")
+    assert isinstance(
+        read_requirements(path, input_paths=inputs)[0], UnscannedRequirement
+    )
+    assert opened
+    assert archive in inputs
+
+
 def test_archive_metadata_protects_only_containing_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -29,6 +61,9 @@ def test_archive_metadata_protects_only_containing_archive(
             zipfile.Path(stream, "demo-1.dist-info/")
         )
         monkeypatch.setattr(metadata, "distribution", lambda name: distribution)
+        monkeypatch.setattr(
+            sys, "path", [entry for entry in sys.path if Path(entry).is_dir()]
+        )
         path = tmp_path / "requirements.txt"
         path.write_text("demo>=1", encoding="utf-8")
         inputs: set[Path] = set()
@@ -43,6 +78,9 @@ def test_explicit_environment_metadata_is_tracked_before_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool
 ) -> None:
     info = tmp_path / "demo-9.dist-info"
+    monkeypatch.setattr(
+        sys, "path", [entry for entry in sys.path if Path(entry).is_dir()]
+    )
     info.mkdir()
     target = tmp_path / "metadata.txt"
     target.write_text("Name: demo\nVersion: 9\n", encoding="utf-8")
@@ -74,6 +112,9 @@ def test_missing_metadata_attempts_are_tracked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     info = tmp_path / "demo-1.dist-info"
+    monkeypatch.setattr(
+        sys, "path", [entry for entry in sys.path if Path(entry).is_dir()]
+    )
     info.mkdir()
     monkeypatch.setattr(
         metadata, "distribution", lambda name: metadata.PathDistribution(info)
