@@ -1,5 +1,6 @@
 """Offline tests for declarations, version selection, and file traversal."""
 
+import zipfile
 from importlib import metadata
 from pathlib import Path
 
@@ -14,6 +15,27 @@ from depscan.models import (
     UnscannedRequirement,
 )
 from depscan.requirements import read_requirements
+
+
+def test_archive_metadata_protects_only_containing_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "installed.zip"
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr("demo-1.dist-info/METADATA", "Name: demo\nVersion: 1\n")
+        stream.writestr("unrelated.py", "raise RuntimeError('must not execute')")
+    with zipfile.ZipFile(archive) as stream:
+        distribution = metadata.PathDistribution(
+            zipfile.Path(stream, "demo-1.dist-info/")
+        )
+        monkeypatch.setattr(metadata, "distribution", lambda name: distribution)
+        path = tmp_path / "requirements.txt"
+        path.write_text("demo>=1", encoding="utf-8")
+        inputs: set[Path] = set()
+        assert isinstance(
+            read_requirements(path, input_paths=inputs)[0], ReadyRequirement
+        )
+        assert inputs == {path, archive}
 
 
 @pytest.mark.parametrize("legacy", [False, True])

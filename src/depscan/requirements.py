@@ -2,9 +2,10 @@
 
 import re
 import shlex
+import zipfile
 from collections.abc import Mapping
 from importlib import metadata
-from os import PathLike
+from os import PathLike, fspath
 from pathlib import Path
 
 from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
@@ -29,27 +30,44 @@ _MAX_INCLUDE_DEPTH = 100
 class _TrackedDistribution(metadata.PathDistribution):
     """Register metadata paths before importlib attempts to open them."""
 
-    def __init__(self, path: Path, input_paths: set[Path]) -> None:
+    def __init__(
+        self,
+        distribution: metadata.Distribution,
+        path: Path,
+        input_paths: set[Path],
+        *,
+        archive: bool = False,
+    ) -> None:
         super().__init__(path)
+        self.distribution = distribution
         self.metadata_path = path
         self.input_paths = input_paths
+        self.archive = archive
 
     def read_text(self, filename: str | PathLike[str]) -> str | None:
-        path = self.metadata_path / filename
+        path = self.metadata_path if self.archive else self.metadata_path / filename
         self.input_paths.add(path.absolute())
         self.input_paths.add(path.resolve())
-        return super().read_text(filename)
+        return self.distribution.read_text(fspath(filename))
 
 
 def track_distribution(
     distribution: metadata.Distribution, input_paths: set[Path] | None
 ) -> metadata.Distribution:
     """Track filesystem metadata only, never distribution modules or RECORD files."""
-    # importlib exposes no public metadata-root accessor. Non-filesystem providers
-    # (such as zip archives) cannot be overwritten through an internal file path.
+    # importlib exposes no public metadata-root accessor. For archive metadata,
+    # protect the containing file, not a nonexistent filesystem member path.
     path = getattr(distribution, "_path", None)
     if input_paths is not None and isinstance(path, Path):
-        return _TrackedDistribution(path, input_paths)
+        return _TrackedDistribution(distribution, path, input_paths)
+    if (
+        input_paths is not None
+        and isinstance(path, zipfile.Path)
+        and path.root.filename is not None
+    ):
+        return _TrackedDistribution(
+            distribution, Path(path.root.filename), input_paths, archive=True
+        )
     return distribution
 
 
