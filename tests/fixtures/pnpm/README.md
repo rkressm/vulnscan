@@ -4,6 +4,9 @@ Accepted format identifiers are exactly YAML strings `6.0` / `9.0`, or numeric
 values equal to 6 / 9, never booleans. Other versions fail explicitly. YAML is
 loaded using approved ruamel.yaml safe/pure mode, duplicate keys disallowed;
 recursive aliases and unsafe tags fail. No package manager is required or run.
+Complex unhashable YAML mapping keys (at the document root or nested in packages)
+also fail contextually, including when the safe loader raises `TypeError` rather
+than `YAMLError`. Regression inputs are synthetic documents in `test_pnpm.py`.
 
 ## Provenance
 

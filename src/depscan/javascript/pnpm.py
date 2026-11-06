@@ -84,7 +84,14 @@ def read_pnpm_lock(path: Path) -> SourceReadResult:
         ):
             raise ValueError("Unsupported lockfileVersion; expected 6.0 or 9.0.")
         requirements, errors = _inventory(path, document, str(version).startswith("6"))
-    except (OSError, UnicodeError, ValueError, YAMLError, RecursionError) as exc:
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TypeError,
+        YAMLError,
+        RecursionError,
+    ) as exc:
         return SourceReadResult(
             source=source,
             status="failed",
