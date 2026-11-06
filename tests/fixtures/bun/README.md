@@ -10,7 +10,7 @@ only the exact filename `bun.lockb` selects the binary diagnostic.
 Retrieved as inert text on 2026-11-06:
 
 - https://raw.githubusercontent.com/oven-sh/bun/bun-v1.2.22/bun.lock
-  Original SHA-256 (T01):
+  Original SHA-256 (T01, independently rechecked 2026-11-06):
   `5c23e1735e8d5cd76ae7cc94f1ea0e9b58cefe690eeee3ee9306fa27f6a49030`.
 - Tuple/version/patch serialization authority:
   https://github.com/oven-sh/bun/blob/bun-v1.2.22/src/install/lockfile/bun.lock.zig

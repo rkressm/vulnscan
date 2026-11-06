@@ -200,6 +200,27 @@ def test_patch_target_without_tuple_remains_visible(tmp_path: Path) -> None:
     assert result.requirements[0].status == "unscanned"
 
 
+def test_patch_matching_uses_resolved_identity_and_preserves_provenance(
+    tmp_path: Path,
+) -> None:
+    result = _read(
+        tmp_path,
+        patchedDependencies={"@scope/pkg@1.2.3": "patches/pkg.patch"},
+        packages={
+            "alias": ["@scope/pkg@1.2.3", "", {}, ""],
+            "parent/alias": ["@scope/pkg@1.2.3", "", {}, ""],
+            "older": ["@scope/pkg@1.2.2", "", {}, ""],
+        },
+    )
+    assert len(_ready(result)) == 3
+    unscanned = [item for item in result.requirements if item.status == "unscanned"]
+    assert len(unscanned) == 2
+    assert [item.source for item in unscanned] == [
+        item.source for item in _ready(result)[:2]
+    ]
+    assert not result.errors
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -218,6 +239,28 @@ def test_invalid_text_is_failed(tmp_path: Path, text: str) -> None:
     result = read_bun_lock(path)
     assert result.status == "failed"
     assert not result.requirements
+    assert result.input_paths == (path,)
+
+
+def test_missing_format_identifier_is_failed(tmp_path: Path) -> None:
+    path = tmp_path / "bun.lock"
+    path.write_text('{"workspaces":{"":{}}}', encoding="utf-8")
+    result = read_bun_lock(path)
+    assert result.status == "failed"
+    assert "lockfileVersion" in result.errors[0].reason
+
+
+def test_permission_error_is_contextual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError("Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    path = tmp_path / "bun.lock"
+    result = read_bun_lock(path)
+    assert result.status == "failed"
+    assert "Permission denied" in result.errors[0].reason
     assert result.input_paths == (path,)
 
 
