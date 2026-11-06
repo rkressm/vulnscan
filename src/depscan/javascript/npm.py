@@ -181,7 +181,7 @@ def _lock(
                         errors.append(
                             _error(path, text, "Nested dependencies must be an object.")
                         )
-        declarations = _requesters(inventory)
+        declarations = _requesters(path, inventory, requirements, errors, legacy=True)
         for install_path, name, record, location in locations:
             requirements.append(
                 _record(name, record, location, declarations.get(install_path, []))
@@ -190,7 +190,7 @@ def _lock(
         packages = document.get("packages")
         if not isinstance(packages, dict):
             raise ValueError("packages must be an object for lockfileVersion 2/3.")
-        declarations = _requesters(packages)
+        declarations = _requesters(path, packages, requirements, errors)
         # The legacy dependencies tree in v2 is intentionally never inventoried.
         for install_path, record in packages.items():
             text = f"packages[{json.dumps(install_path)}]"
@@ -215,24 +215,60 @@ def _lock(
     return requirements, errors
 
 
-def _requesters(inventory: dict[str, Any]) -> dict[str, list[str]]:
+def _requesters(
+    path: Path,
+    inventory: dict[str, Any],
+    requirements: list[RequirementResult],
+    errors: list[ScanError],
+    *,
+    legacy: bool = False,
+) -> dict[str, list[str]]:
     """Associate declarations with the nearest recorded install, including hoists.
 
     This is a lexical inventory join, not range resolution or an active install
     reconstruction. A nested record shadows its hoisted namesake even if broken.
+    Append coverage gaps and malformed declarations to the caller's output lists.
     """
     result: dict[str, list[str]] = {}
+    nonregistry_requests: list[tuple[str, str, SourceLocation]] = []
     for requester, record in inventory.items():
         if not isinstance(record, dict):
             continue
         directory = PurePosixPath(requester)
         ancestors = (directory, *directory.parents)
-        for group in (*_GROUPS, "requires"):
-            declarations = record.get(group)
+        # v1 dependencies are nested records, not declaration strings. The root
+        # v1 requires field is a boolean; only package requires maps are requests.
+        groups = ("requires",) if legacy else (*_GROUPS, "requires")
+        if legacy and requester == "":
+            continue
+        for group in groups:
+            if group not in record:
+                continue
+            text = f"packages[{json.dumps(requester)}].{group}"
+            if legacy:
+                names = requester.removeprefix("node_modules/").split("/node_modules/")
+                text = (
+                    ".".join(f"dependencies[{json.dumps(name)}]" for name in names)
+                    + f".{group}"
+                )
+            declarations = record[group]
             if not isinstance(declarations, dict):
+                errors.append(
+                    _error(path, text, "Dependency declarations must be an object.")
+                )
                 continue
             for name, declaration in declarations.items():
+                location = _location(
+                    path, f"{text}[{json.dumps(name)}] = {declaration}"
+                )
                 if not isinstance(declaration, str):
+                    errors.append(
+                        _error(
+                            path,
+                            location.text,
+                            "Dependency declaration must be a string.",
+                        )
+                    )
                     continue
                 for ancestor in ancestors:
                     if ancestor.name == "node_modules":
@@ -240,7 +276,41 @@ def _requesters(inventory: dict[str, Any]) -> dict[str, list[str]]:
                     candidate = str(ancestor / "node_modules" / name)
                     if candidate in inventory:
                         result.setdefault(candidate, []).append(declaration)
+                        if not _registry_request(declaration):
+                            nonregistry_requests.append((candidate, name, location))
                         break
+                else:
+                    # Do not reconstruct an install or demand range satisfaction.
+                    # Root/workspace declarations with no recorded install still
+                    # need an honest coverage outcome; transitive peers may be
+                    # intentionally absent from the recorded inventory.
+                    if not legacy and _INSTALL_PATH.fullmatch(requester) is None:
+                        requirements.append(
+                            _unscanned(
+                                location,
+                                "No recorded dependency inventory; "
+                                "declaration was not scanned.",
+                                name,
+                            )
+                        )
+    for candidate, name, location in nonregistry_requests:
+        record = inventory[candidate]
+        if not isinstance(record, dict) or "resolved" in record:
+            continue
+        version = record.get("version")
+        if any(_registry_request(value) for value in result[candidate]) or (
+            isinstance(version, str) and version.startswith("npm:")
+        ):
+            # A legitimate hoisted registry/alias request can identify the
+            # inventory, but cannot prove coverage of a separate local/git one.
+            requirements.append(
+                _unscanned(
+                    location,
+                    "Non-registry declaration is not covered by the "
+                    "hoisted registry inventory.",
+                    name,
+                )
+            )
     return result
 
 
@@ -266,6 +336,10 @@ def _ordinary_registry_spec(value: str) -> bool:
         and not any(delimiter in value for delimiter in (":", "/", "\\"))
         and not value.endswith((".tgz", ".tar.gz", ".tar"))
     )
+
+
+def _registry_request(value: str) -> bool:
+    return value.startswith("npm:") or _ordinary_registry_spec(value)
 
 
 def _record(
@@ -337,4 +411,16 @@ def _record(
             return _unscanned(
                 source, "Unrecognized registry-relative source.", install_name
             )
+    if (
+        "resolved" not in record
+        and any(not _registry_request(value) for value in declarations)
+        and not any(_registry_request(value) for value in declarations)
+        and not version.startswith("npm:")
+    ):
+        return _unscanned(
+            source,
+            "Non-registry declaration; a package version/name alone "
+            "does not establish registry identity.",
+            install_name,
+        )
     return resolve_npm_declaration(name, version, source)

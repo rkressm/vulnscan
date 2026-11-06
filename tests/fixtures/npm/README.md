@@ -68,6 +68,12 @@ unknown versions, malformed shapes, local/git/workspace and unverifiable tarball
   is retained without leaking across shadowing nested records. Conflicting alias
   targets or alias-versus-ordinary requests for the same record stay unscanned.
   This is a lexical inventory join, not dependency range/installation resolution.
+  Root/workspace declarations with no matching recorded installation yield
+  contextual unscanned outcomes, including exact pins, ranges and URL requests.
+  A matching install is not checked for range satisfaction; missing transitive
+  peers are not treated as evidence of a broken inventory. Declaration groups
+  and values in package records are validated with recoverable contextual errors.
+  v1 `dependencies` remain record trees, and root `requires` remains a boolean.
   Alias version, explicit name, requester and public-registry URL evidence are
   reconciled before validating a registry-relative source against the real target.
   Ordinary registry requests assert the installation name independently of whether
@@ -81,6 +87,11 @@ unknown versions, malformed shapes, local/git/workspace and unverifiable tarball
   tarballs offline; they remain **unscanned**, as do git/file/link/URL versions and
   sources. No URL is fetched by the reader. Missing resolved fields are allowed
   for otherwise exact lock inventory (e.g. bundled entries).
+  Without a recorded resolution or independent registry/alias request, affirmative
+  non-registry declarations prevent a bare version/name from becoming a registry
+  identity. Mixed hoisted registry/alias and non-registry requests preserve the
+  registry inventory but expose the separate non-registry declaration as unscanned.
+  Explicit recognized registry resolutions continue to supply registry evidence.
 - Sources register just the attempted selected file as an absolute path, preserving
   symlink spelling. No environment, package manager, node_modules or member file
   is read. Locations use document line 1 and group/key/path descriptions.
