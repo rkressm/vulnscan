@@ -24,3 +24,14 @@ Two existing synthetic fixtures are copied byte-for-byte into temporary roots:
 These intentionally incomplete inventories must exit 2 while preserving usable
 registry lookups. Reader-specific suites retain exhaustive syntax/version tests;
 T13 checks the discovery/read/lookup/cache/report and export-protection boundaries.
+
+Manager-hint success cases include competing managers and stale same-manager
+siblings, proving selection reaches the intended reader and OSV identity. A small
+unsupported-format matrix (including selected binary Bun) proves these inputs
+remain source failures while Python findings survive. Detailed rejection syntax
+stays in reader unit tests.
+
+The HTTP timeout tuple, PyPI-then-npm source ordering, and document-level line 1
+are deliberately asserted as the current implementation contract, not inferred
+from terminal snapshots. Isolated metadata tests stub only the CLI's own version
+string; dependency metadata discovery uses real temporary distributions/archives.

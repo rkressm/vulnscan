@@ -1,11 +1,13 @@
 """Independent offline checks of discovery → parsing → OSV/cache → CLI reports."""
 
+import http.client
 import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import urllib.request
 import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -80,9 +82,20 @@ def offline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Mock:
         pytest.fail(f"External execution/network forbidden: {args!r}")
 
     monkeypatch.setattr(subprocess, "Popen", forbidden)
-    for name in ("system", "popen", "posix_spawn", "posix_spawnp", "execv", "execve"):
+    for name in (
+        "system",
+        "popen",
+        "posix_spawn",
+        "posix_spawnp",
+        *(name for name in dir(os) if name.startswith(("exec", "spawn"))),
+    ):
         monkeypatch.setattr(os, name, forbidden)
     monkeypatch.setattr(requests.sessions.Session, "request", forbidden)
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", forbidden)
+    monkeypatch.setattr(http.client.HTTPSConnection, "connect", forbidden)
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
     monkeypatch.setattr("depscan.cache.user_cache_path", lambda app: tmp_path / "cache")
@@ -220,6 +233,94 @@ def test_supported_formats_without_managers(
     assert "npm dependency source: selected" in captured.err
     assert "no known vulnerabilities" in captured.out
     assert "safe" not in captured.out.lower()
+
+
+@pytest.mark.parametrize(
+    "manager,filename,version",
+    [
+        ("npm", "npm-shrinkwrap.json", "1.2.3"),
+        ("yarn", "yarn.lock", "2.0.0"),
+        ("pnpm", "pnpm-lock.yaml", "3.0.0"),
+        ("bun", "bun.lock", "4.0.0"),
+    ],
+)
+def test_manager_hint_dispatches_selected_inventory_among_stale_siblings(
+    tmp_path: Path,
+    offline: Mock,
+    manager: str,
+    filename: str,
+    version: str,
+) -> None:
+    write(tmp_path / "requirements.txt", "python-only==1\n")
+    write(
+        tmp_path / "package.json",
+        json.dumps(
+            {
+                "packageManager": f"{manager}@10.0.0",
+                "dependencies": {"must-not-query": "9.0.0"},
+            }
+        ),
+    )
+    write(
+        tmp_path / "npm-shrinkwrap.json",
+        '{"lockfileVersion":3,"packages":{"node_modules/demo":{"version":"1.2.3"}}}',
+    )
+    write(tmp_path / "package-lock.json", "broken stale npm sibling")
+    write(tmp_path / "yarn.lock", '# yarn lockfile v1\n"demo@^2":\n  version "2.0.0"\n')
+    write(
+        tmp_path / "pnpm-lock.yaml",
+        "lockfileVersion: '9.0'\npackages:\n  demo@3.0.0:\n"
+        "    resolution: {integrity: synthetic}\n",
+    )
+    write(
+        tmp_path / "bun.lock",
+        '{"lockfileVersion":1,"workspaces":{"":{}},"packages":{"demo":["demo@4.0.0","",{},""]}}',
+    )
+    write(tmp_path / "bun.lockb", "binary stale Bun sibling")
+    code, report = export(tmp_path, tmp_path / "report.json")
+    assert code == 0
+    assert queries(offline) == [("PyPI", "python-only", "1"), ("npm", "demo", version)]
+    summary = next(item for item in report.sources if item.ecosystem == "npm")
+    assert summary.status == "success"
+    assert summary.source is not None and summary.source.path == tmp_path / filename
+    assert {item.path.name for item in summary.candidates} == set(JS_FILES)
+
+
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        ("package-lock.json", '{"lockfileVersion":99,"packages":{}}'),
+        ("yarn.lock", "__metadata:\n  version: 5\n"),
+        ("pnpm-lock.yaml", "lockfileVersion: '7.0'\npackages: {}\n"),
+        ("bun.lock", '{"lockfileVersion":2,"workspaces":{"":{}},"packages":{}}'),
+        ("bun.lockb", "synthetic unsupported binary"),
+    ],
+)
+def test_selected_unsupported_formats_preserve_python_findings(
+    tmp_path: Path,
+    offline: Mock,
+    filename: str,
+    document: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    write(tmp_path / "requirements.txt", "python-only==1\n")
+    # A selected unsupported lock must never fall back to an exact manifest pin.
+    write(tmp_path / "package.json", '{"dependencies":{"must-not-query":"1.2.3"}}')
+    source = write(tmp_path / filename, document)
+    offline.return_value = response(advisory("PYTHON-KEPT"))
+    code, report = export(tmp_path, tmp_path / "report.json")
+    assert code == 2
+    assert queries(offline) == [("PyPI", "python-only", "1")]
+    assert len(report.results) == 1 and report.results[0].status == "vulnerable"
+    assert len(report.errors) == 1 and report.errors[0].ecosystem == "npm"
+    summary = next(item for item in report.sources if item.ecosystem == "npm")
+    assert summary.status == "failed"
+    assert summary.source is not None and summary.source.path == source
+    assert "unsupported" in report.errors[0].reason.lower()
+    if filename == "bun.lockb":
+        assert "externally" in report.errors[0].reason
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out + captured.err
 
 
 @pytest.mark.parametrize("failed", ["PyPI", "npm"])
@@ -467,17 +568,21 @@ def test_included_attempts_and_empty_files_are_protected(
         target.write_bytes(b"\xff")
     original = target.read_bytes() if target.exists() else None
     destination = alias_output(target, tmp_path, alias)
+    denied_attempts: list[Path] = []
     if kind == "denied":
         read_text = Path.read_text
 
         def denied(path: Path, *args: Any, **kwargs: Any) -> str:
             if path == target.resolve():
+                denied_attempts.append(path)
                 raise PermissionError("injected include read denial")
             return read_text(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", denied)
     assert main([str(tmp_path), "--json", str(destination)]) == 2
     assert "must not overwrite" in capsys.readouterr().err
+    if kind == "denied":
+        assert denied_attempts == [target.resolve()]
     if original is None:
         assert not destination.exists()
     else:
@@ -544,7 +649,7 @@ def test_unselected_path_comparison_errors_fail_closed(
 ) -> None:
     mixed(tmp_path)
     target = write(tmp_path / "bun.lockb", "binary, unselected")
-    write(tmp_path / "bun.lock", '{"lockfileVersion":1}')
+    write(tmp_path / "bun.lock", '{"lockfileVersion":1,"workspaces":{"":{}}}')
     destination = write(tmp_path / "report.json", "preserve report")
     original: Callable[..., Any] = getattr(Path, operation)
 
@@ -674,7 +779,7 @@ def test_each_reader_exports_honest_empty_success(
         (
             "poetry.lock",
             '[[package]]\nname="demo"\nversion="1.2.3"\noptional=true\n'
-            'markers="python_version < \'0\'"\n',
+            "markers=\"python_version < '0'\"\n",
         ),
         (
             "Pipfile.lock",
