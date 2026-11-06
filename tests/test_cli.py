@@ -144,18 +144,32 @@ def test_json_cannot_overwrite_environment_metadata(
     offline_osv.assert_not_called()
 
 
+@pytest.mark.parametrize("selected_venv", [False, True])
 def test_json_cannot_overwrite_unmatched_metadata_archive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline_osv: MagicMock
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_osv: MagicMock,
+    selected_venv: bool,
 ) -> None:
-    archive = tmp_path / "environment.zip"
+    venv = tmp_path / "env"
+    if selected_venv:
+        archive = venv / "lib/python3.14/site-packages"
+        archive.parent.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
+    else:
+        archive = tmp_path / "environment.zip"
     with zipfile.ZipFile(archive, "w") as stream:
         stream.writestr("other-1.dist-info/METADATA", "Name: other\nVersion: 1\n")
         stream.writestr("unrelated.py", "raise RuntimeError('must not execute')")
     original = archive.read_bytes()
-    monkeypatch.syspath_prepend(str(archive))
+    if not selected_venv:
+        monkeypatch.syspath_prepend(str(archive))
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("missing-archive-safety-package>=1", encoding="utf-8")
-    assert main([str(requirements), "--no-cache", "--json", str(archive)]) == 2
+    arguments = [str(requirements), "--no-cache", "--json", str(archive)]
+    if selected_venv:
+        arguments.extend(["--venv", str(venv)])
+    assert main(arguments) == 2
     assert archive.read_bytes() == original
     offline_osv.assert_not_called()
 

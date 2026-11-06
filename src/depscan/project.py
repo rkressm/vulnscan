@@ -19,6 +19,7 @@ from depscan.requirements import (
     read_requirements,
     resolve_requirement,
     track_distribution,
+    track_metadata_archive_candidates,
 )
 
 _FILES = (
@@ -108,6 +109,7 @@ def _installed_versions(
     if not paths:
         raise ValueError(f"No site-packages directory found in {venv}.")
     versions: dict[str, str] = {}
+    track_metadata_archive_candidates(paths, input_paths)
     for distribution in metadata.distributions(path=[str(path) for path in paths]):
         distribution = track_distribution(distribution, input_paths)
         name = canonicalize_name(distribution.metadata["Name"])
