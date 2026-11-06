@@ -1,0 +1,16 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "bun" },
+    "packages/@types/bun": { "name": "@types/bun", "version": "1.2.2" },
+  },
+  "packages": {
+    "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.21.5", "", { "os": "aix", "cpu": "ppc64" }, "sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ=="],
+    "@types/bun": ["@types/bun@workspace:packages/@types/bun"],
+    "lru-cache": ["@wolfy1339/lru-cache@11.0.2-patch.1", "", {}, "sha512-BgYZfL2ADCXKOw2wJtkM3slhHotawWkgIRRxq4wEybnZQPjvAp71SPX35xepMykTw8gXlzWcWPTY31hlbnRsDA=="],
+    "bun-tracestrings": ["bun-tracestrings@github:oven-sh/bun.report#912ca63", {}, "oven-sh-bun.report-912ca63"],
+    "@octokit/types": ["@octokit/types@13.10.0", "", {}, ""],
+    "@octokit/app/@octokit/types": ["@octokit/types@12.6.0", "", {}, ""],
+    "@octokit/auth-unauthenticated/@octokit/types": ["@octokit/types@12.6.0", "", {}, ""],
+  },
+}

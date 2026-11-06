@@ -1,0 +1,16 @@
+{
+  // Synthetic grammar cases: strings containing comment markers are not comments.
+  "lockfileVersion": 1,
+  "workspaces": { "": { "name": "root", "version": "99.0.0" } },
+  "patchedDependencies": { "@scope/pkg@1.2.3-beta.1+build.2": "patches/pkg.patch" },
+  "packages": {
+    "alias": ["@scope/pkg@1.2.3-beta.1+build.2", "https://registry.example.test//npm/", { "devDependencies": { "dev": "^1" } }, ""],
+    "optional": ["optional@2.0.0", "", { "os": "win32", "cpu": "arm64", "optionalDependencies": { "other": "*" } }, ""],
+    "local": ["local@file:../local", {}],
+    "link": ["link@link:../linked", {}],
+    "root": ["root@root:", {}],
+    "tar": ["tar@https://example.test//archive/*literal*/pkg.tgz", {}],
+    "git": ["git@git+ssh://git@example.test/repo#abc", {}, "abc"],
+    "broken": ["broken@1.0.0", "", null, ""],
+  }, /* block comment and trailing commas */
+}
