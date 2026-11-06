@@ -1,7 +1,10 @@
 """Offline tests for declarations, version selection, and file traversal."""
 
+import sys
+import zipfile
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import pytest
 from packaging.markers import default_environment
@@ -14,6 +17,113 @@ from depscan.models import (
     UnscannedRequirement,
 )
 from depscan.requirements import read_requirements
+
+
+def test_unmatched_archive_discovery_is_tracked_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "environment.zip"
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr("other-1.dist-info/METADATA", "Name: other\nVersion: 1\n")
+    monkeypatch.syspath_prepend(str(archive))
+    inputs: set[Path] = set()
+    original_init = zipfile.ZipFile.__init__
+    opened = False
+
+    def checked_init(
+        self: zipfile.ZipFile, file: Any, *args: Any, **kwargs: Any
+    ) -> None:
+        nonlocal opened
+        if file == str(archive):
+            assert archive in inputs
+            opened = True
+        original_init(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", checked_init)
+    path = tmp_path / "requirements.txt"
+    path.write_text("missing-archive-safety-package>=1", encoding="utf-8")
+    assert isinstance(
+        read_requirements(path, input_paths=inputs)[0], UnscannedRequirement
+    )
+    assert opened
+    assert archive in inputs
+
+
+def test_archive_metadata_protects_only_containing_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "installed.zip"
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr("demo-1.dist-info/METADATA", "Name: demo\nVersion: 1\n")
+        stream.writestr("unrelated.py", "raise RuntimeError('must not execute')")
+    with zipfile.ZipFile(archive) as stream:
+        distribution = metadata.PathDistribution(
+            zipfile.Path(stream, "demo-1.dist-info/")
+        )
+        monkeypatch.setattr(metadata, "distribution", lambda name: distribution)
+        monkeypatch.setattr(
+            sys, "path", [entry for entry in sys.path if Path(entry).is_dir()]
+        )
+        path = tmp_path / "requirements.txt"
+        path.write_text("demo>=1", encoding="utf-8")
+        inputs: set[Path] = set()
+        assert isinstance(
+            read_requirements(path, input_paths=inputs)[0], ReadyRequirement
+        )
+        assert inputs == {path, archive}
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_explicit_environment_metadata_is_tracked_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    info = tmp_path / "demo-9.dist-info"
+    monkeypatch.setattr(
+        sys, "path", [entry for entry in sys.path if Path(entry).is_dir()]
+    )
+    info.mkdir()
+    target = tmp_path / "metadata.txt"
+    target.write_text("Name: demo\nVersion: 9\n", encoding="utf-8")
+    metadata_file = info / ("PKG-INFO" if legacy else "METADATA")
+    metadata_file.symlink_to(target)
+    monkeypatch.setattr(
+        metadata, "distribution", lambda name: metadata.PathDistribution(info)
+    )
+    inputs: set[Path] = set()
+    original = Path.read_text
+
+    def checked_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path.parent == info:
+            assert path.absolute() in inputs
+            assert path.resolve() in inputs
+        return original(path, encoding="utf-8")
+
+    monkeypatch.setattr(Path, "read_text", checked_read)
+    path = tmp_path / "requirements.txt"
+    path.write_text("demo>=1", encoding="utf-8")
+    results = read_requirements(path, input_paths=inputs)
+    assert isinstance(results[0], ReadyRequirement)
+    # Keep the replaced metadata.version API authoritative, not preflight Version: 9.
+    assert results[0].package.version == "1.5"
+    assert inputs == {path, info / "METADATA", metadata_file, target}
+
+
+def test_missing_metadata_attempts_are_tracked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info = tmp_path / "demo-1.dist-info"
+    monkeypatch.setattr(
+        sys, "path", [entry for entry in sys.path if Path(entry).is_dir()]
+    )
+    info.mkdir()
+    monkeypatch.setattr(
+        metadata, "distribution", lambda name: metadata.PathDistribution(info)
+    )
+    path = tmp_path / "requirements.txt"
+    path.write_text("demo>=1", encoding="utf-8")
+    inputs: set[Path] = set()
+    assert isinstance(read_requirements(path, input_paths=inputs)[0], ReadyRequirement)
+    assert inputs == {path, info / "METADATA", info / "PKG-INFO", info}
 
 
 @pytest.fixture(autouse=True)

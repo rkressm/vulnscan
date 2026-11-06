@@ -1,6 +1,7 @@
 """Offline CLI integration tests, including output and exit codes."""
 
 import json
+import zipfile
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
@@ -98,6 +99,78 @@ def test_project_export_cannot_overwrite_lockfile(
     lock.write_text(content, encoding="utf-8")
     assert main([str(tmp_path), "--json", str(lock)]) == 2
     assert lock.read_text(encoding="utf-8") == content
+    offline_osv.assert_not_called()
+
+
+@pytest.mark.parametrize("selected_venv", [False, True])
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink", "input-symlink"])
+def test_json_cannot_overwrite_environment_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_osv: MagicMock,
+    selected_venv: bool,
+    alias: str,
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("demo>=1", encoding="utf-8")
+    venv = tmp_path / "env"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
+    info = venv / "Lib/site-packages/demo-2.dist-info"
+    info.mkdir(parents=True)
+    metadata_file = info / "METADATA"
+    content = "Name: demo\nVersion: 2\n"
+    metadata_file.write_text(content, encoding="utf-8")
+    destination = metadata_file
+    if alias != "direct":
+        destination = tmp_path / "report.json"
+        if alias == "symlink":
+            destination.symlink_to(metadata_file)
+        elif alias == "hardlink":
+            destination.hardlink_to(metadata_file)
+        else:
+            metadata_file.rename(destination)
+            metadata_file.symlink_to(destination)
+    arguments = [str(requirements), "--no-cache", "--json", str(destination)]
+    if selected_venv:
+        arguments.extend(["--venv", str(venv)])
+    else:
+        monkeypatch.setattr(
+            metadata, "distribution", lambda name: metadata.PathDistribution(info)
+        )
+    assert main(arguments) == 2
+    assert metadata_file.read_text(encoding="utf-8") == content
+    assert destination.read_text(encoding="utf-8") == content
+    offline_osv.assert_not_called()
+
+
+@pytest.mark.parametrize("selected_venv", [False, True])
+def test_json_cannot_overwrite_unmatched_metadata_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_osv: MagicMock,
+    selected_venv: bool,
+) -> None:
+    venv = tmp_path / "env"
+    if selected_venv:
+        archive = venv / "lib/python3.14/site-packages"
+        archive.parent.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
+    else:
+        archive = tmp_path / "environment.zip"
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr("other-1.dist-info/METADATA", "Name: other\nVersion: 1\n")
+        stream.writestr("unrelated.py", "raise RuntimeError('must not execute')")
+    original = archive.read_bytes()
+    if not selected_venv:
+        monkeypatch.syspath_prepend(str(archive))
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("missing-archive-safety-package>=1", encoding="utf-8")
+    arguments = [str(requirements), "--no-cache", "--json", str(archive)]
+    if selected_venv:
+        arguments.extend(["--venv", str(venv)])
+    assert main(arguments) == 2
+    assert archive.read_bytes() == original
     offline_osv.assert_not_called()
 
 
