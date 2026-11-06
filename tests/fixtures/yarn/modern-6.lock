@@ -1,0 +1,9 @@
+__metadata:
+  version: 6
+  cacheKey: 8
+
+"@actions/core@npm:^1.2.6":
+  version: 1.2.6
+  resolution: "@actions/core@npm:1.2.6"
+  languageName: node
+  linkType: hard
