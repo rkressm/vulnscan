@@ -227,6 +227,7 @@ def _requesters(
 
     This is a lexical inventory join, not range resolution or an active install
     reconstruction. A nested record shadows its hoisted namesake even if broken.
+    Append coverage gaps and malformed declarations to the caller's output lists.
     """
     result: dict[str, list[str]] = {}
     nonregistry_requests: list[tuple[str, str, SourceLocation]] = []

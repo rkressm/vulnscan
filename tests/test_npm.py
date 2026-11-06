@@ -276,6 +276,42 @@ def test_empty_manifest(tmp_path: Path) -> None:
     assert result.status == "success" and not result.requirements and not result.errors
 
 
+def test_v1_root_requires_flag_is_not_a_declaration_map(tmp_path: Path) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": 1,
+                "requires": True,
+                "dependencies": {"foo": {"version": "1.2.3"}},
+            },
+        )
+    )
+    assert identities(result) == [("npm", "foo", "1.2.3")]
+    assert not result.errors
+
+
+def test_absent_transitive_peer_does_not_require_install_reconstruction(
+    tmp_path: Path,
+) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "node_modules/foo": {
+                        "version": "1.2.3",
+                        "peerDependencies": {"peer": "^9"},
+                    },
+                },
+            },
+        )
+    )
+    assert identities(result) == [("npm", "foo", "1.2.3")]
+    assert len(result.requirements) == 1 and not result.errors
+
+
 @pytest.mark.parametrize("version", [1, 2, 3])
 def test_inventory_all_flags_duplicates_distinct_versions_and_aliases(
     tmp_path: Path, version: int
