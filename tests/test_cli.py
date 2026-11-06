@@ -207,8 +207,14 @@ def test_python_source_context_in_schema_v2(
     data = json.loads(destination.read_text(encoding="utf-8"))
     assert data["detected_ecosystems"] == ["PyPI"]
     assert data["sources"][0]["status"] == status
-    assert data["sources"][0]["source"]["path"] == str(source)
-    assert data["sources"][0]["candidates"] == [data["sources"][0]["source"]]
+    summary = data["sources"][0]
+    assert summary["candidates"][0]["path"] == str(source)
+    if content is None:
+        assert summary["source"] is None  # Discovery failed before a reader ran.
+        assert data["results"] == []
+    else:
+        assert summary["source"]["path"] == str(source)
+        assert summary["candidates"] == [summary["source"]]
     assert str(source) in data["input_paths"]
     assert all(error["ecosystem"] == "PyPI" for error in data["errors"])
     assert all(result.get("ecosystem", "PyPI") == "PyPI" for result in data["results"])
@@ -221,26 +227,11 @@ def test_lookup_failure_retains_package_ecosystem(
     from depscan.models import (
         FailedLookup,
         PackageVersion,
-        ReadyRequirement,
-        SourceLocation,
     )
 
-    source = tmp_path / "requirements.txt"
-    source.write_text("demo==1.2.3", encoding="utf-8")
-    # Exercise shared orchestration only: npm readers/routing are later tasks.
+    source = tmp_path / "package.json"
+    source.write_text('{"dependencies":{"demo":"1.2.3"}}', encoding="utf-8")
     package = PackageVersion(ecosystem="npm", name="demo", version="1.2.3")
-    monkeypatch.setattr(
-        "depscan.cli.read_project",
-        lambda *args, **kwargs: (
-            source,
-            [
-                ReadyRequirement(
-                    source=SourceLocation(path=source, line=1, text="demo"),
-                    package=package,
-                )
-            ],
-        ),
-    )
     monkeypatch.setattr(
         "depscan.cli.lookup_packages",
         lambda *args, **kwargs: [FailedLookup(package=package, reason="Unavailable")],
@@ -249,6 +240,7 @@ def test_lookup_failure_retains_package_ecosystem(
     assert main([str(source), "--json", str(destination)]) == 2
     data = json.loads(destination.read_text(encoding="utf-8"))
     assert data["results"][0]["ecosystem"] == data["errors"][0]["ecosystem"] == "npm"
+    assert data["sources"][0]["status"] == "success"
 
 
 @pytest.mark.parametrize("content", ["", "# comment only\n", "\n  \n"])
@@ -412,7 +404,8 @@ def test_unreadable_input(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     assert main([str(tmp_path / "missing.txt")]) == 2
 
     output = capsys.readouterr().out
-    assert "Cannot read requirements file" in output
+    assert "No such file or directory" in output
+    assert str(tmp_path / "missing.txt") in output
     assert "Scan incomplete." in output
     assert "Traceback" not in output
 
@@ -578,3 +571,184 @@ def test_failed_lookup_is_not_persisted(tmp_path: Path, offline_osv: MagicMock) 
     assert main([str(requirements)]) == 2
     assert offline_osv.call_count == 2
     assert not (tmp_path / "cache" / "osv.json").exists()
+
+
+@pytest.mark.parametrize(
+    "failed", ["none", "python", "npm", "ambiguous", "discovery", "venv", "lookup"]
+)
+def test_mixed_ecosystems_continue_and_report_honestly(
+    tmp_path: Path, offline_osv: MagicMock, failed: str
+) -> None:
+    (tmp_path / "requirements.txt").write_text("demo==1.2.3", encoding="utf-8")
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"dependencies":{"demo":"1.2.3"}}', encoding="utf-8")
+    args = [str(tmp_path), "--no-cache", "--json", str(tmp_path / "report.json")]
+    if failed == "python":
+        (tmp_path / "uv.lock").write_text("invalid TOML[", encoding="utf-8")
+    elif failed == "npm":
+        manifest.write_text("invalid JSON", encoding="utf-8")
+    elif failed in {"ambiguous", "discovery"}:
+        (tmp_path / "package-lock.json").write_text(
+            '{"lockfileVersion":3,"packages":{}}', encoding="utf-8"
+        )
+        (tmp_path / "yarn.lock").write_text("# yarn lockfile v1\n", encoding="utf-8")
+        if failed == "discovery":
+            manifest.write_text("invalid JSON", encoding="utf-8")
+    elif failed == "venv":
+        args.extend(["--venv", str(tmp_path / "missing-env")])
+    if failed == "lookup":
+
+        def reply(*args: object, **kwargs: object) -> MagicMock:
+            response = MagicMock()
+            payload = kwargs["json"]
+            assert isinstance(payload, dict)
+            response.status_code = (
+                503 if payload["package"]["ecosystem"] == "npm" else 200
+            )
+            response.json.return_value = {"vulns": [{"id": "TEST-1"}]}
+            response.__enter__.return_value = response
+            return response
+
+        offline_osv.side_effect = reply
+    else:
+        offline_osv.return_value.json.return_value = {"vulns": [{"id": "TEST-1"}]}
+    assert main(args) == (1 if failed == "none" else 2)
+    data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert data["detected_ecosystems"] == ["PyPI", "npm"]
+    assert len(data["sources"]) == 2
+    assert any(result["status"] == "vulnerable" for result in data["results"])
+    assert len(data["errors"]) == (0 if failed == "none" else 1)
+    if failed in {"ambiguous", "discovery"}:
+        assert data["sources"][1]["source"] is None
+        assert data["sources"][1]["status"] == (
+            "ambiguous" if failed == "ambiguous" else "failed"
+        )
+    elif failed == "lookup":
+        assert [source["status"] for source in data["sources"]] == [
+            "success",
+            "success",
+        ]
+    elif failed == "none":
+        assert {
+            call.kwargs["json"]["package"]["ecosystem"]
+            for call in offline_osv.call_args_list
+        } == {"PyPI", "npm"}
+
+
+@pytest.mark.parametrize(
+    "filename,content",
+    [
+        ("package.json", "{}"),
+        ("package-lock.json", '{"lockfileVersion":3,"packages":{}}'),
+        ("yarn.lock", "# yarn lockfile v1\n"),
+        ("pnpm-lock.yaml", "lockfileVersion: '9.0'\npackages: {}\n"),
+        ("bun.lock", '{"lockfileVersion":1,"workspaces":{"":{}}}'),
+    ],
+)
+@pytest.mark.parametrize("explicit", [False, True])
+def test_empty_js_sources_are_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    offline_osv: MagicMock,
+    filename: str,
+    content: str,
+    explicit: bool,
+) -> None:
+    path = tmp_path / filename
+    path.write_text(content, encoding="utf-8")
+    destination = tmp_path / "report.json"
+    assert main([str(path if explicit else tmp_path), "--json", str(destination)]) == 0
+    captured = capsys.readouterr()
+    assert str(path) in captured.err
+    assert "npm" in captured.err
+    data = json.loads(destination.read_text(encoding="utf-8"))
+    assert data["detected_ecosystems"] == ["npm"]
+    assert data["results"] == data["errors"] == []
+    assert data["sources"][-1]["status"] == "success"
+    if not explicit:
+        assert data["sources"][0]["status"] == "absent"
+    offline_osv.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "unselected",
+        "hint",
+        "failed-hint",
+        "ambiguous",
+        "failed-lock",
+        "missing-include",
+    ],
+)
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink", "input-symlink"])
+def test_all_discovery_and_attempted_inputs_are_protected(
+    tmp_path: Path,
+    offline_osv: MagicMock,
+    selection: str,
+    alias: str,
+) -> None:
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"packageManager":"npm@10.0.0"}', encoding="utf-8")
+    lock = tmp_path / "package-lock.json"
+    lock.write_text('{"lockfileVersion":3,"packages":{}}', encoding="utf-8")
+    protected = manifest
+    if selection in {"hint", "failed-hint", "ambiguous"}:
+        (tmp_path / "yarn.lock").write_text("# yarn lockfile v1\n", encoding="utf-8")
+        if selection != "hint":
+            manifest.write_text(
+                "invalid JSON" if selection == "failed-hint" else "{}", encoding="utf-8"
+            )
+    elif selection == "failed-lock":
+        lock.write_text("invalid JSON", encoding="utf-8")
+        protected = lock
+    elif selection == "missing-include":
+        (tmp_path / "requirements.txt").write_text("-r missing.txt", encoding="utf-8")
+        protected = tmp_path / "missing.txt"
+        if alias != "direct":
+            protected.write_text("", encoding="utf-8")
+    original = protected.read_bytes() if protected.exists() else None
+    destination = protected
+    if alias != "direct":
+        destination = tmp_path / "report.json"
+        if alias == "symlink":
+            destination.symlink_to(protected)
+        elif alias == "hardlink":
+            destination.hardlink_to(protected)
+        else:
+            protected.rename(destination)
+            protected.symlink_to(destination)
+    assert main([str(tmp_path), "--json", str(destination)]) == 2
+    if original is None:
+        assert not destination.exists()
+    else:
+        assert protected.read_bytes() == original
+    offline_osv.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["resolve", "stat", "samefile"])
+def test_output_comparison_errors_block_before_lookups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline_osv: MagicMock,
+    operation: str,
+) -> None:
+    from depscan.project import read_sources
+
+    source = tmp_path / "requirements.txt"
+    source.write_text("demo==1", encoding="utf-8")
+    destination = tmp_path / "report.json"
+    destination.write_text("preserve", encoding="utf-8")
+    evidence = read_sources(source)
+    monkeypatch.setattr("depscan.cli.read_sources", lambda *args, **kwargs: evidence)
+    original = getattr(Path, operation)
+
+    def fail(self: Path, *args: object, **kwargs: object) -> object:
+        if self == source or (operation == "samefile" and self == destination):
+            raise OSError("comparison denied")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, fail)
+    assert main([str(source), "--json", str(destination)]) == 2
+    assert destination.read_text(encoding="utf-8") == "preserve"
+    offline_osv.assert_not_called()

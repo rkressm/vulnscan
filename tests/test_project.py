@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from depscan.models import ReadyRequirement, ScanError, UnscannedRequirement
-from depscan.project import read_project
+from depscan.project import read_project, read_sources
 
 
 def write(path: Path, content: str) -> Path:
@@ -321,3 +321,122 @@ def test_project_without_venv_does_not_inspect_metadata(
         read_project(tmp_path, input_paths=inputs)[1][0], UnscannedRequirement
     )
     assert inputs == {path}
+
+
+@pytest.mark.parametrize("project_scan", [False, True])
+@pytest.mark.parametrize(
+    "filename,content,kind",
+    [
+        ("package.json", '{"dependencies":{"demo":"1.2.3"}}', "package_json"),
+        (
+            "package-lock.json",
+            '{"lockfileVersion":3,"packages":{"node_modules/demo":{"version":"1.2.3"}}}',
+            "npm",
+        ),
+        (
+            "npm-shrinkwrap.json",
+            '{"lockfileVersion":1,"dependencies":{"demo":{"version":"1.2.3"}}}',
+            "npm",
+        ),
+        ("yarn.lock", '# yarn lockfile v1\ndemo@^1:\n  version "1.2.3"\n', "yarn"),
+        (
+            "pnpm-lock.yaml",
+            "lockfileVersion: '9.0'\npackages:\n  demo@1.2.3:\n"
+            "    resolution: {integrity: sha512-demo}\n"
+            "snapshots:\n  demo@1.2.3: {}\n",
+            "pnpm",
+        ),
+        (
+            "bun.lock",
+            '{"lockfileVersion":1,"workspaces":{"":{}},"packages":{"demo":["demo@1.2.3","",{},""]}}',
+            "bun",
+        ),
+        ("bun.lockb", "binary", "bun_binary"),
+    ],
+)
+def test_read_sources_dispatch(
+    tmp_path: Path, project_scan: bool, filename: str, content: str, kind: str
+) -> None:
+    path = write(tmp_path / filename, content)
+    discovery, reads = read_sources(
+        tmp_path if project_scan else path, venv=tmp_path / "invalid-env"
+    )
+    assert len(discovery.selections) == (2 if project_scan else 1)
+    assert len(reads) == 1
+    result = reads[0]
+    assert result.source.kind == kind
+    assert result.source.path == path
+    assert path in result.input_paths
+    assert result.status == ("failed" if kind == "bun_binary" else "success")
+    if kind != "bun_binary":
+        assert result.requirements
+        for requirement in result.requirements:
+            assert isinstance(requirement, ReadyRequirement)
+            assert requirement.package.identity == ("npm", "demo", "1.2.3")
+
+
+def test_read_sources_preserves_python_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("depscan.requirements.metadata.version", lambda name: "2")
+    path = write(tmp_path / "requirements.txt", "demo>=1")
+    directory = read_sources(tmp_path)[1][0]
+    explicit = read_sources(path)[1][0]
+    custom = read_sources(write(tmp_path / "custom.in", "demo>=1"))[1][0]
+    manifest = read_sources(
+        write(tmp_path / "pyproject.toml", '[project]\ndependencies=["demo>=1"]')
+    )[1][0]
+    assert (
+        directory.status
+        == explicit.status
+        == custom.status
+        == manifest.status
+        == "success"
+    )
+    assert isinstance(directory.requirements[0], UnscannedRequirement)
+    assert isinstance(explicit.requirements[0], ReadyRequirement)
+    assert isinstance(custom.requirements[0], ReadyRequirement)
+    assert isinstance(manifest.requirements[0], UnscannedRequirement)
+
+
+@pytest.mark.parametrize("failure", ["parse", "venv", "ambiguity", "discovery"])
+def test_read_sources_isolates_failures(tmp_path: Path, failure: str) -> None:
+    write(tmp_path / "requirements.txt", "demo==1")
+    write(tmp_path / "package.json", '{"dependencies":{"demo":"1.2.3"}}')
+    venv = None
+    if failure == "parse":
+        write(tmp_path / "uv.lock", "invalid TOML[")
+    elif failure == "venv":
+        venv = tmp_path / "missing-env"
+    else:
+        write(tmp_path / "package-lock.json", '{"lockfileVersion":3,"packages":{}}')
+        write(tmp_path / "yarn.lock", "# yarn lockfile v1\n")
+        if failure == "discovery":
+            write(tmp_path / "package.json", "invalid JSON")
+    discovery, reads = read_sources(tmp_path, venv=venv)
+    if failure in {"parse", "venv"}:
+        assert [read.status for read in reads] == ["failed", "success"]
+        assert reads[0].requirements == ()
+        assert len(reads[0].errors) == 1
+        assert reads[0].errors[0].ecosystem == "PyPI"
+    else:
+        assert len(reads) == 1
+        assert reads[0].status == "success"
+        assert discovery.selections[1].status == (
+            "ambiguous" if failure == "ambiguity" else "failed"
+        )
+        assert discovery.selections[1].source is None
+
+
+def test_read_sources_root_and_include_failures_are_distinct(tmp_path: Path) -> None:
+    path = write(tmp_path / "requirements.txt", "-r missing.txt")
+    result = read_sources(path)[1][0]
+    assert result.status == "success"
+    assert result.errors == ()
+    assert isinstance(result.requirements[0], UnscannedRequirement)
+    assert tmp_path / "missing.txt" in result.input_paths
+    path.write_bytes(b"\xff")
+    result = read_sources(path)[1][0]
+    assert result.status == "failed"
+    assert result.requirements == ()
+    assert len(result.errors) == 1
