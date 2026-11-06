@@ -161,6 +161,32 @@ def test_malformed_document_fails_contextually(tmp_path: Path, document: str) ->
     assert result.input_paths == ((tmp_path / "pnpm-lock.yaml").absolute(),)
 
 
+@pytest.mark.parametrize(
+    "document",
+    [
+        "lockfileVersion: 9.0\n? [{a: b}]\n: value\n",
+        "lockfileVersion: 9.0\npackages:\n  ? [[one]]\n  : {}\n",
+    ],
+    ids=["top-level-complex-key", "nested-complex-key"],
+)
+def test_unhashable_yaml_keys_fail_contextually(tmp_path: Path, document: str) -> None:
+    result = read_text(tmp_path, document)
+    path = (tmp_path / "pnpm-lock.yaml").absolute()
+    assert result.status == "failed"
+    assert not result.requirements
+    assert result.source.path == path
+    assert result.source.ecosystem == "npm"
+    assert result.input_paths == (path,)
+    assert len(result.errors) == 1
+    error = result.errors[0]
+    assert error.ecosystem == "npm"
+    assert error.source is not None
+    assert error.source.path == path
+    assert error.source.line == 1
+    assert error.source.text == path.name
+    assert error.reason.startswith(f"Cannot read {path.name}:")
+
+
 def test_io_and_unicode_failures_register_attempted_input(tmp_path: Path) -> None:
     path = tmp_path / "missing.yaml"
     for content in (None, b"\xff"):
