@@ -12,6 +12,155 @@ from depscan.models import ReadyRequirement, SourceReadResult
 FIXTURES = Path(__file__).parent / "fixtures" / "npm"
 
 
+@pytest.mark.parametrize("declaration", ["4.17.20", "^4", "https://example.org/a.tgz"])
+@pytest.mark.parametrize("requester", ["", "packages/member"])
+@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize(
+    "group",
+    ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"],
+)
+def test_missing_root_and_workspace_inventory_is_visible(
+    tmp_path: Path, declaration: str, requester: str, version: int, group: str
+) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": version,
+                "packages": {requester: {group: {"lodash": declaration}}},
+            },
+        )
+    )
+    assert not identities(result)
+    assert any(
+        r.status == "unscanned" and r.name == "lodash" and group in r.source.text
+        for r in result.requirements
+    )
+
+
+@pytest.mark.parametrize(
+    "declaration", ["git+https://example.org/foo.git#abc", "file:../local"]
+)
+@pytest.mark.parametrize("requester", ["", "node_modules/parent"])
+@pytest.mark.parametrize("named", [True, False])
+def test_nonregistry_request_cannot_turn_bare_version_into_registry_identity(
+    tmp_path: Path, declaration: str, requester: str, named: bool
+) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    requester: {
+                        "version": "2.0.0",
+                        "dependencies": {"foo": declaration},
+                    },
+                    "node_modules/foo": {
+                        "version": "1.2.3",
+                        **({"name": "foo"} if named else {}),
+                    },
+                },
+            },
+        )
+    )
+    assert ("npm", "foo", "1.2.3") not in identities(result)
+    assert any(r.status == "unscanned" and r.name == "foo" for r in result.requirements)
+
+
+@pytest.mark.parametrize(
+    "group",
+    ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"],
+)
+@pytest.mark.parametrize("bad", [[], None, {"bad": 123}])
+@pytest.mark.parametrize("requester", ["", "packages/member", "node_modules/parent"])
+@pytest.mark.parametrize("version", [2, 3])
+def test_lock_declaration_shapes_are_not_silently_ignored(
+    tmp_path: Path, group: str, bad: Any, requester: str, version: int
+) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": version,
+                "packages": {
+                    requester: {group: bad, "version": "2.0.0"},
+                    "node_modules/good": {"version": "1.0.0"},
+                },
+            },
+        )
+    )
+    assert result.errors
+    assert result.errors[0].source is not None
+    assert group in result.errors[0].source.text
+    assert ("npm", "good", "1.0.0") in identities(result)
+
+
+@pytest.mark.parametrize(
+    "group",
+    ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"],
+)
+def test_lexical_coverage_does_not_resolve_or_check_ranges(
+    tmp_path: Path, group: str
+) -> None:
+    result = read_npm_lock(
+        write(
+            tmp_path / "package-lock.json",
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {group: {"foo": "^9"}},
+                    "packages/member": {"dependencies": {"foo": "latest"}},
+                    "node_modules/foo": {"version": "1.2.3"},
+                },
+            },
+        )
+    )
+    assert identities(result) == [("npm", "foo", "1.2.3")]
+    assert not result.errors
+    assert not any(
+        r.status == "unscanned" and r.name == "foo" for r in result.requirements
+    )
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("registry_request", [None, "npm:real@^1", "^1"])
+@pytest.mark.parametrize(
+    "source", ["file:../local", "git+https://example.org/foo.git#abc"]
+)
+def test_nonregistry_and_legitimate_hoisted_requests_are_kept_separate(
+    tmp_path: Path, version: int, registry_request: str | None, source: str
+) -> None:
+    group = "requires" if version == 1 else "dependencies"
+    records: dict[str, Any] = {
+        "parent": {"version": "2.0.0", group: {"foo": source}},
+        "foo": {"version": "1.2.3"},
+        "isolated": {
+            "version": "3.0.0",
+            group: {"foo": "npm:nested@^4"},
+        },
+    }
+    if registry_request is not None:
+        records["other"] = {"version": "5.0.0", group: {"foo": registry_request}}
+    if version == 1:
+        records["isolated"]["dependencies"] = {"foo": {"version": "4.1.0"}}
+        doc = {"lockfileVersion": version, "dependencies": records}
+    else:
+        packages = {"node_modules/" + name: record for name, record in records.items()}
+        packages["node_modules/isolated/node_modules/foo"] = {"version": "4.1.0"}
+        doc = {"lockfileVersion": version, "packages": packages}
+    result = read_npm_lock(write(tmp_path / "package-lock.json", doc))
+    actual = identities(result)
+    assert ("npm", "nested", "4.1.0") in actual
+    if registry_request is None:
+        assert not any(ver == "1.2.3" for _, _, ver in actual)
+    else:
+        target = "real" if registry_request.startswith("npm:") else "foo"
+        assert ("npm", target, "1.2.3") in actual
+    assert any(r.status == "unscanned" and r.name == "foo" for r in result.requirements)
+    assert not result.errors
+
+
 def write(path: Path, document: Any) -> Path:
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
